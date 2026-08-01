@@ -14,6 +14,11 @@ class KnowledgeBaseCreate(BaseModel):
     description: Optional[str] = None
 
 
+class KnowledgeBaseUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = None
+
+
 class KnowledgeBaseRead(BaseModel):
     id: UUID
     name: str

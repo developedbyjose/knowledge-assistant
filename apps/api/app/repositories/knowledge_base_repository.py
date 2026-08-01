@@ -44,6 +44,33 @@ class KnowledgeBaseRepository:
     def get(self, knowledge_base_id: UUID) -> KnowledgeBase | None:
         return self.session.get(KnowledgeBase, knowledge_base_id)
 
+    def get_with_counts(self, knowledge_base_id: UUID) -> KnowledgeBaseRead | None:
+        statement = (
+            select(
+                KnowledgeBase,
+                func.count(func.distinct(Document.id)).label("document_count"),
+                func.count(DocumentChunk.id).label("chunk_count"),
+            )
+            .outerjoin(Document, Document.knowledge_base_id == KnowledgeBase.id)
+            .outerjoin(DocumentChunk, DocumentChunk.document_id == Document.id)
+            .where(KnowledgeBase.id == knowledge_base_id)
+            .group_by(KnowledgeBase.id)
+        )
+        row = self.session.execute(statement).one_or_none()
+        if row is None:
+            return None
+
+        knowledge_base, document_count, chunk_count = row
+        return KnowledgeBaseRead.model_validate(
+            knowledge_base,
+            from_attributes=True,
+        ).model_copy(
+            update={
+                "document_count": document_count,
+                "chunk_count": chunk_count,
+            }
+        )
+
     def create(
         self,
         *,
@@ -59,3 +86,20 @@ class KnowledgeBaseRepository:
         self.session.add(knowledge_base)
         self.session.flush()
         return knowledge_base
+
+    def update(
+        self,
+        knowledge_base: KnowledgeBase,
+        *,
+        values: dict[str, str | None],
+    ) -> KnowledgeBase:
+        if "name" in values:
+            knowledge_base.name = values["name"]
+        if "description" in values:
+            knowledge_base.description = values["description"]
+        self.session.flush()
+        return knowledge_base
+
+    def delete(self, knowledge_base: KnowledgeBase) -> None:
+        self.session.delete(knowledge_base)
+        self.session.flush()

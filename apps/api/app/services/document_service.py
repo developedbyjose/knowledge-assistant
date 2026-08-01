@@ -13,6 +13,7 @@ from app.rag.ingestion.pdf_parser import PdfParser
 from app.rag.providers.embedding import EmbeddingProvider
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
+from app.schemas.document import DocumentRead
 from app.schemas.retrieval import DocumentUploadRead
 
 
@@ -101,6 +102,56 @@ class DocumentService:
                 chunk_count=0,
                 error_message=document.error_message,
             )
+
+    def list_by_knowledge_base(self, knowledge_base_id: UUID) -> list[DocumentRead]:
+        knowledge_base = self.knowledge_bases.get(knowledge_base_id)
+        if knowledge_base is None:
+            raise LookupError("Knowledge base not found.")
+        return self.documents.list_by_knowledge_base(knowledge_base_id)
+
+    def get(self, document_id: UUID) -> DocumentRead:
+        document = self.documents.get_with_count(document_id)
+        if document is None:
+            raise LookupError("Document not found.")
+        return document
+
+    def delete(self, document_id: UUID) -> None:
+        document = self.documents.get(document_id)
+        if document is None:
+            raise LookupError("Document not found.")
+
+        target_path = Path(settings.upload_dir) / document.storage_key
+        self.documents.delete(document)
+        self.session.commit()
+        if target_path.exists():
+            target_path.unlink()
+
+    def reprocess(self, document_id: UUID) -> DocumentRead:
+        document = self.documents.get(document_id)
+        if document is None:
+            raise LookupError("Document not found.")
+
+        target_path = Path(settings.upload_dir) / document.storage_key
+        try:
+            self.documents.mark_processing(document)
+            self.documents.clear_chunks(document)
+            if not target_path.exists():
+                raise FileNotFoundError("Stored document file not found.")
+
+            pages = self.parser.parse(target_path)
+            chunks = self.chunker.chunk_pages(pages)
+            if not chunks:
+                raise ValueError("No extractable text was found in the PDF.")
+
+            embeddings = self.embedding_provider.embed_texts([chunk.content for chunk in chunks])
+            self.documents.add_chunks(document=document, chunks=chunks, embeddings=embeddings)
+            self.documents.mark_processed(document, page_count=len(pages))
+            self.session.commit()
+            return self.get(document_id)
+        except Exception as exc:
+            self.documents.mark_failed(document, error_message=str(exc))
+            self.session.commit()
+            return self.get(document_id)
 
     def _safe_filename(self, filename: str) -> str:
         return re.sub(r"[^A-Za-z0-9._-]+", "-", filename).strip("-") or "upload.pdf"
