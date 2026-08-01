@@ -1,0 +1,4 @@
+interface:
+  display_name: "Knowledge Assistant Design Direction"
+  short_description: "Calm enterprise UI design guide"
+  default_prompt: "Use $knowledge-assistant-design-direction when designing or reviewing Knowledge Assistant frontend UI, layout, styling, components, or design-system tokens."

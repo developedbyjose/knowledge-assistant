@@ -1,0 +1,4 @@
+interface:
+  display_name: "Knowledge Assistant Structure"
+  short_description: "Project monorepo placement guide"
+  default_prompt: "Use $knowledge-assistant-structure when adding or reorganizing files in the Knowledge Assistant monorepo."

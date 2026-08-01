@@ -1,0 +1,4 @@
+interface:
+  display_name: "Knowledge Assistant API Plan"
+  short_description: "Versioned REST API endpoint guide"
+  default_prompt: "Use $knowledge-assistant-api-plan when adding or reviewing Knowledge Assistant API routes, endpoint contracts, or streaming message behavior."

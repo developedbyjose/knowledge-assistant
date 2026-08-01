@@ -1,0 +1,4 @@
+interface:
+  display_name: "Knowledge Assistant Initial Database Design"
+  short_description: "First milestone database schema guide"
+  default_prompt: "Use $knowledge-assistant-initial-database-design when adding or reviewing the first milestone database schema, migrations, models, repositories, or seed data."

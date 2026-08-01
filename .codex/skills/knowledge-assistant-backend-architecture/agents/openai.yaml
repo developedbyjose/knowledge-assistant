@@ -1,0 +1,4 @@
+interface:
+  display_name: "Knowledge Assistant Backend Architecture"
+  short_description: "Layered backend architecture guide"
+  default_prompt: "Use $knowledge-assistant-backend-architecture when adding or reviewing backend API, service, repository, provider, RAG, or persistence code."
