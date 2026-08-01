@@ -4,14 +4,18 @@ from uuid import UUID, uuid4
 from fastapi.testclient import TestClient
 
 from app.api.v1.dependencies import (
+    get_conversation_service,
     get_document_service,
+    get_answer_service,
     get_knowledge_base_service,
     get_retrieval_service,
 )
 from app.main import app
+from app.rag.providers.chat import ChatModelError
+from app.schemas.conversation import ConversationMessageResponse, ConversationRead, MessageRead
 from app.schemas.document import DocumentRead
 from app.schemas.knowledge_base import KnowledgeBaseRead
-from app.schemas.retrieval import DocumentUploadRead, RetrievalResults
+from app.schemas.retrieval import AnswerCitation, CitedAnswer, DocumentUploadRead, RetrievalResult, RetrievalResults
 
 MISSING_ID = UUID("00000000-0000-0000-0000-000000000404")
 PROCESSED_ID = UUID("00000000-0000-0000-0000-000000000101")
@@ -57,8 +61,20 @@ class FakeKnowledgeBaseService:
 
 class FakeDocumentService:
     async def upload_pdf(self, *, knowledge_base_id, upload):  # noqa: ANN001, ANN201
+        if knowledge_base_id == MISSING_ID:
+            raise LookupError("Knowledge base not found.")
+
+        content = await upload.read()
         if upload.content_type != "application/pdf":
             raise ValueError("Only PDF uploads are supported.")
+        if not (upload.filename or "").lower().endswith(".pdf"):
+            raise ValueError("Only PDF uploads are supported.")
+        if not content:
+            raise ValueError("Uploaded PDF cannot be empty.")
+        if len(content) > 26_214_400:
+            raise ValueError("Uploaded PDF must be 25 MB or smaller.")
+        if not content.startswith(b"%PDF-"):
+            raise ValueError("Uploaded file does not appear to be a valid PDF.")
 
         return DocumentUploadRead(
             id=uuid4(),
@@ -121,7 +137,186 @@ class FakeDocumentService:
 
 class FakeRetrievalService:
     def retrieve(self, *, knowledge_base_id, question, limit):  # noqa: ANN001, ANN201
-        return RetrievalResults(question=question, results=[])
+        if knowledge_base_id == MISSING_ID:
+            raise LookupError("Knowledge base not found.")
+
+        return RetrievalResults(
+            question=question,
+            results=[
+                RetrievalResult(
+                    chunk_id=uuid4(),
+                    document_id=uuid4(),
+                    filename="retrieval-baseline.pdf",
+                    rank=1,
+                    similarity_score=0.92,
+                    content="Query embeddings rank policy chunks above onboarding chunks.",
+                    page_number=1,
+                    chunk_index=0,
+                    metadata={"source": "pdf", "page_number": 1},
+                )
+            ],
+        )
+
+
+class FakeAnswerService:
+    def __init__(self, *, error=None):  # noqa: ANN001
+        self.error = error
+
+    async def answer(self, *, knowledge_base_id, question, limit):  # noqa: ANN001, ANN201
+        if self.error:
+            raise self.error
+        if knowledge_base_id == MISSING_ID:
+            raise LookupError("Knowledge base not found.")
+
+        chunk_id = uuid4()
+        document_id = uuid4()
+        return CitedAnswer(
+            question=question,
+            answer="Query embeddings rank policy chunks above onboarding chunks [1].",
+            citations=[
+                AnswerCitation(
+                    chunk_id=chunk_id,
+                    document_id=document_id,
+                    filename="retrieval-baseline.pdf",
+                    page_number=1,
+                    chunk_index=0,
+                    rank=1,
+                )
+            ],
+            source_chunks=[
+                RetrievalResult(
+                    chunk_id=chunk_id,
+                    document_id=document_id,
+                    filename="retrieval-baseline.pdf",
+                    rank=1,
+                    similarity_score=0.92,
+                    content="Query embeddings rank policy chunks above onboarding chunks.",
+                    page_number=1,
+                    chunk_index=0,
+                    metadata={"source": "pdf", "page_number": 1},
+                )
+            ],
+        )
+
+
+class FakeConversationService:
+    def __init__(self, *, error=None):  # noqa: ANN001
+        self.error = error
+        self.conversation_id = uuid4()
+        self.knowledge_base_id = uuid4()
+        self.user_message_id = uuid4()
+        self.assistant_message_id = uuid4()
+
+    def create(self, *, knowledge_base_id, title):  # noqa: ANN001, ANN201
+        if self.error:
+            raise self.error
+        if knowledge_base_id == MISSING_ID:
+            raise LookupError("Knowledge base not found.")
+        return self._conversation(knowledge_base_id=knowledge_base_id, title=title or "New chat")
+
+    def list(self):  # noqa: ANN201
+        return [self._conversation()]
+
+    def get(self, conversation_id):  # noqa: ANN001, ANN201
+        if conversation_id == MISSING_ID:
+            raise LookupError("Conversation not found.")
+        return self._conversation(id=conversation_id)
+
+    def delete(self, conversation_id):  # noqa: ANN001, ANN201
+        if conversation_id == MISSING_ID:
+            raise LookupError("Conversation not found.")
+
+    async def add_message(self, *, conversation_id, content, limit):  # noqa: ANN001, ANN201
+        if self.error:
+            raise self.error
+        if conversation_id == MISSING_ID:
+            raise LookupError("Conversation not found.")
+        user_message = self._message(conversation_id=conversation_id, role="user", content=content)
+        assistant_message = self._message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content="Grounded answer [1].",
+            model_name="gemini-flash-lite-latest",
+        )
+        chunk_id = uuid4()
+        document_id = uuid4()
+        return ConversationMessageResponse(
+            conversation=self._conversation(id=conversation_id, messages=[user_message, assistant_message]),
+            user_message=user_message,
+            assistant_message=assistant_message,
+            citations=[
+                AnswerCitation(
+                    chunk_id=chunk_id,
+                    document_id=document_id,
+                    filename="policy.pdf",
+                    page_number=1,
+                    chunk_index=0,
+                    rank=1,
+                )
+            ],
+            source_chunks=[
+                RetrievalResult(
+                    chunk_id=chunk_id,
+                    document_id=document_id,
+                    filename="policy.pdf",
+                    rank=1,
+                    similarity_score=0.9,
+                    content="Policy evidence.",
+                    page_number=1,
+                    chunk_index=0,
+                    metadata={"page_number": 1},
+                )
+            ],
+        )
+
+    async def stream_message(self, *, conversation_id, content, limit):  # noqa: ANN001, ANN201
+        user_message = self._message(conversation_id=conversation_id, role="user", content=content)
+        assistant_message = self._message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content="Grounded answer [1].",
+            model_name="gemini-flash-lite-latest",
+        )
+        yield {
+            "event": "message_start",
+            "data": {
+                "conversation_id": str(conversation_id),
+                "user_message": user_message.model_dump(mode="json"),
+            },
+        }
+        yield {"event": "token", "data": {"content": "Grounded answer [1]."}}
+        yield {"event": "sources", "data": {"citations": [], "source_chunks": []}}
+        yield {
+            "event": "message_done",
+            "data": {
+                "conversation": self._conversation(
+                    id=conversation_id,
+                    messages=[user_message, assistant_message],
+                ).model_dump(mode="json"),
+                "assistant_message": assistant_message.model_dump(mode="json"),
+            },
+        }
+
+    def _conversation(self, *, id=None, knowledge_base_id=None, title="New chat", messages=None):  # noqa: A002, ANN001, ANN201
+        return ConversationRead(
+            id=id or self.conversation_id,
+            user_id=None,
+            knowledge_base_id=knowledge_base_id or self.knowledge_base_id,
+            title=title,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+            messages=messages or [],
+        )
+
+    def _message(self, *, conversation_id, role, content, model_name=None):  # noqa: ANN001, ANN201
+        return MessageRead(
+            id=uuid4(),
+            conversation_id=conversation_id,
+            role=role,
+            content=content,
+            model_name=model_name,
+            created_at=datetime.now(timezone.utc),
+        )
 
 
 def test_rejects_non_pdf_upload() -> None:
@@ -135,6 +330,48 @@ def test_rejects_non_pdf_upload() -> None:
 
     app.dependency_overrides.clear()
     assert response.status_code == 400
+
+
+def test_rejects_empty_pdf_upload() -> None:
+    app.dependency_overrides[get_document_service] = lambda: FakeDocumentService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/documents",
+        files={"file": ("sample.pdf", b"", "application/pdf")},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Uploaded PDF cannot be empty."
+
+
+def test_rejects_oversized_pdf_upload() -> None:
+    app.dependency_overrides[get_document_service] = lambda: FakeDocumentService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/documents",
+        files={"file": ("sample.pdf", b"%PDF-" + (b"0" * 26_214_401), "application/pdf")},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Uploaded PDF must be 25 MB or smaller."
+
+
+def test_rejects_invalid_pdf_signature() -> None:
+    app.dependency_overrides[get_document_service] = lambda: FakeDocumentService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/documents",
+        files={"file": ("sample.pdf", b"not a pdf", "application/pdf")},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Uploaded file does not appear to be a valid PDF."
 
 
 def test_upload_pdf_returns_document_status() -> None:
@@ -151,7 +388,36 @@ def test_upload_pdf_returns_document_status() -> None:
     assert response.json()["status"] == "processed"
 
 
-def test_query_before_chunks_returns_empty_results() -> None:
+def test_upload_missing_knowledge_base_returns_404() -> None:
+    app.dependency_overrides[get_document_service] = lambda: FakeDocumentService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{MISSING_ID}/documents",
+        files={"file": ("sample.pdf", b"%PDF-1.4", "application/pdf")},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 404
+
+
+def test_query_embedding_returns_ranked_chunks() -> None:
+    app.dependency_overrides[get_retrieval_service] = lambda: FakeRetrievalService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/query-embedding",
+        json={"question": "What is this about?", "limit": 5},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    body = response.json()
+    assert body["results"][0]["rank"] == 1
+    assert body["results"][0]["metadata"] == {"source": "pdf", "page_number": 1}
+
+
+def test_retrieval_query_alias_still_returns_chunks() -> None:
     app.dependency_overrides[get_retrieval_service] = lambda: FakeRetrievalService()
     client = TestClient(app)
 
@@ -162,7 +428,109 @@ def test_query_before_chunks_returns_empty_results() -> None:
 
     app.dependency_overrides.clear()
     assert response.status_code == 200
-    assert response.json()["results"] == []
+    assert response.json()["results"][0]["filename"] == "retrieval-baseline.pdf"
+
+
+def test_query_embedding_validates_payload() -> None:
+    app.dependency_overrides[get_retrieval_service] = lambda: FakeRetrievalService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/query-embedding",
+        json={"question": "", "limit": 21},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 422
+
+
+def test_query_embedding_missing_knowledge_base_returns_404() -> None:
+    app.dependency_overrides[get_retrieval_service] = lambda: FakeRetrievalService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{MISSING_ID}/query-embedding",
+        json={"question": "What is this about?", "limit": 5},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 404
+
+
+def test_answer_question_returns_cited_answer() -> None:
+    app.dependency_overrides[get_answer_service] = lambda: FakeAnswerService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/answers",
+        json={"question": "How are chunks ranked?", "limit": 5},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    body = response.json()
+    assert body["question"] == "How are chunks ranked?"
+    assert body["answer"].endswith("[1].")
+    assert body["citations"][0]["filename"] == "retrieval-baseline.pdf"
+    assert body["citations"][0]["rank"] == 1
+    assert body["source_chunks"][0]["metadata"] == {"source": "pdf", "page_number": 1}
+
+
+def test_answer_question_validates_payload() -> None:
+    app.dependency_overrides[get_answer_service] = lambda: FakeAnswerService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/answers",
+        json={"question": "", "limit": 21},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 422
+
+
+def test_answer_question_missing_knowledge_base_returns_404() -> None:
+    app.dependency_overrides[get_answer_service] = lambda: FakeAnswerService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{MISSING_ID}/answers",
+        json={"question": "How are chunks ranked?", "limit": 5},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 404
+
+
+def test_answer_question_retrieval_config_error_returns_400() -> None:
+    app.dependency_overrides[get_answer_service] = lambda: FakeAnswerService(
+        error=ValueError("Knowledge base embedding model does not match the configured embedding model.")
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/answers",
+        json={"question": "How are chunks ranked?", "limit": 5},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 400
+
+
+def test_answer_question_provider_error_returns_502() -> None:
+    app.dependency_overrides[get_answer_service] = lambda: FakeAnswerService(
+        error=ChatModelError("Gemini API key is not configured.")
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/answers",
+        json={"question": "How are chunks ranked?", "limit": 5},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Gemini API key is not configured."
 
 
 def test_create_knowledge_base_route() -> None:
@@ -303,3 +671,127 @@ def test_missing_document_returns_404() -> None:
 
     app.dependency_overrides.clear()
     assert response.status_code == 404
+
+
+def test_create_conversation_route() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+    knowledge_base_id = uuid4()
+
+    response = client.post(
+        "/api/v1/conversations",
+        json={"knowledge_base_id": str(knowledge_base_id), "title": "Policy chat"},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 201
+    assert response.json()["knowledge_base_id"] == str(knowledge_base_id)
+    assert response.json()["title"] == "Policy chat"
+
+
+def test_list_conversations_route() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+
+    response = client.get("/api/v1/conversations")
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json()[0]["title"] == "New chat"
+
+
+def test_get_conversation_route() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+    conversation_id = uuid4()
+
+    response = client.get(f"/api/v1/conversations/{conversation_id}")
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json()["id"] == str(conversation_id)
+
+
+def test_delete_conversation_route() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+
+    response = client.delete(f"/api/v1/conversations/{uuid4()}")
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 204
+    assert response.content == b""
+
+
+def test_delete_missing_conversation_returns_404() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+
+    response = client.delete(f"/api/v1/conversations/{MISSING_ID}")
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 404
+
+
+def test_create_conversation_message_route() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+    conversation_id = uuid4()
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content": "What changed?", "limit": 5},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    body = response.json()
+    assert body["user_message"]["content"] == "What changed?"
+    assert body["assistant_message"]["content"].endswith("[1].")
+    assert body["citations"][0]["filename"] == "policy.pdf"
+
+
+def test_create_conversation_message_sse_route() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/conversations/{uuid4()}/messages",
+        headers={"Accept": "text/event-stream"},
+        json={"content": "What changed?", "limit": 5, "stream": True},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: message_start" in response.text
+    assert "event: token" in response.text
+    assert "event: message_done" in response.text
+
+
+def test_create_conversation_missing_knowledge_base_returns_404() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/conversations",
+        json={"knowledge_base_id": str(MISSING_ID), "title": "Policy chat"},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 404
+
+
+def test_create_conversation_message_provider_error_returns_502() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService(
+        error=ChatModelError("Gemini API key is not configured.")
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/conversations/{uuid4()}/messages",
+        json={"content": "What changed?", "limit": 5},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 502

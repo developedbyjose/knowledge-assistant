@@ -1,5 +1,5 @@
 from app.core.config import settings
-from app.rag.providers.chat import ChatModel
+from app.rag.providers.chat import ChatModel, ChatModelError
 from app.rag.providers.embedding import EmbeddingProvider
 from app.rag.providers.gemini import GeminiChatModel
 from app.rag.providers.local_embedding import LocalEmbeddingProvider
@@ -12,7 +12,7 @@ def create_chat_model() -> ChatModel:
             model=settings.llm_model,
         )
 
-    raise ValueError(f"Unsupported LLM provider: {settings.llm_provider}")
+    raise ChatModelError(f"Unsupported LLM provider: {settings.llm_provider}")
 
 
 def create_embedding_provider() -> EmbeddingProvider:

@@ -1,16 +1,31 @@
-from typing import Annotated
+from __future__ import annotations
+
+import json
+from typing import Annotated, Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Response, UploadFile, status
+from fastapi.responses import StreamingResponse
 
 from app.api.v1.dependencies import (
+    get_answer_service,
+    get_conversation_service,
     get_document_service,
     get_knowledge_base_service,
     get_retrieval_service,
 )
+from app.rag.providers.chat import ChatModelError
+from app.schemas.conversation import (
+    ConversationCreate,
+    ConversationMessageResponse,
+    ConversationRead,
+    MessageCreate,
+)
 from app.schemas.document import DocumentRead
 from app.schemas.knowledge_base import KnowledgeBaseCreate, KnowledgeBaseRead, KnowledgeBaseUpdate
-from app.schemas.retrieval import DocumentUploadRead, RetrievalQuery, RetrievalResults
+from app.schemas.retrieval import CitedAnswer, DocumentUploadRead, RetrievalQuery, RetrievalResults
+from app.services.answer_service import AnswerService
+from app.services.conversation_service import ConversationService
 from app.services.document_service import DocumentService
 from app.services.knowledge_base_service import KnowledgeBaseService
 from app.services.retrieval_service import RetrievalService
@@ -145,14 +160,10 @@ def reprocess_document(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
-@router.post(
-    "/knowledge-bases/{knowledge_base_id}/retrieval-query",
-    response_model=RetrievalResults,
-)
-def retrieve_chunks(
+def _retrieve_chunks(
     knowledge_base_id: UUID,
     payload: RetrievalQuery,
-    service: Annotated[RetrievalService, Depends(get_retrieval_service)],
+    service: RetrievalService,
 ) -> RetrievalResults:
     try:
         return service.retrieve(
@@ -162,3 +173,140 @@ def retrieve_chunks(
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post(
+    "/knowledge-bases/{knowledge_base_id}/query-embedding",
+    response_model=RetrievalResults,
+)
+def query_embedding(
+    knowledge_base_id: UUID,
+    payload: RetrievalQuery,
+    service: Annotated[RetrievalService, Depends(get_retrieval_service)],
+) -> RetrievalResults:
+    return _retrieve_chunks(knowledge_base_id, payload, service)
+
+
+@router.post(
+    "/knowledge-bases/{knowledge_base_id}/retrieval-query",
+    response_model=RetrievalResults,
+)
+def retrieve_chunks(
+    knowledge_base_id: UUID,
+    payload: RetrievalQuery,
+    service: Annotated[RetrievalService, Depends(get_retrieval_service)],
+) -> RetrievalResults:
+    return _retrieve_chunks(knowledge_base_id, payload, service)
+
+
+@router.post(
+    "/knowledge-bases/{knowledge_base_id}/answers",
+    response_model=CitedAnswer,
+)
+async def answer_question(
+    knowledge_base_id: UUID,
+    payload: RetrievalQuery,
+    service: Annotated[AnswerService, Depends(get_answer_service)],
+) -> CitedAnswer:
+    try:
+        return await service.answer(
+            knowledge_base_id=knowledge_base_id,
+            question=payload.question,
+            limit=payload.limit,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ChatModelError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+@router.post(
+    "/conversations",
+    response_model=ConversationRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_conversation(
+    payload: ConversationCreate,
+    service: Annotated[ConversationService, Depends(get_conversation_service)],
+) -> ConversationRead:
+    try:
+        return service.create(knowledge_base_id=payload.knowledge_base_id, title=payload.title)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get("/conversations", response_model=list[ConversationRead])
+def list_conversations(
+    service: Annotated[ConversationService, Depends(get_conversation_service)],
+) -> list[ConversationRead]:
+    return service.list()
+
+
+@router.get("/conversations/{conversation_id}", response_model=ConversationRead)
+def get_conversation(
+    conversation_id: UUID,
+    service: Annotated[ConversationService, Depends(get_conversation_service)],
+) -> ConversationRead:
+    try:
+        return service.get(conversation_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_conversation(
+    conversation_id: UUID,
+    service: Annotated[ConversationService, Depends(get_conversation_service)],
+) -> Response:
+    try:
+        service.delete(conversation_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.post(
+    "/conversations/{conversation_id}/messages",
+    response_model=ConversationMessageResponse,
+)
+async def create_conversation_message(
+    conversation_id: UUID,
+    payload: MessageCreate,
+    service: Annotated[ConversationService, Depends(get_conversation_service)],
+    accept: Annotated[Optional[str], Header()] = None,
+) -> Any:
+    wants_stream = payload.stream or (accept is not None and "text/event-stream" in accept)
+    if wants_stream:
+        return StreamingResponse(
+            _format_sse(
+                service.stream_message(
+                    conversation_id=conversation_id,
+                    content=payload.content,
+                    limit=payload.limit,
+                )
+            ),
+            media_type="text/event-stream",
+        )
+
+    try:
+        return await service.add_message(
+            conversation_id=conversation_id,
+            content=payload.content,
+            limit=payload.limit,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ChatModelError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+async def _format_sse(events):  # noqa: ANN001, ANN202
+    async for event in events:
+        yield f"event: {event['event']}\n"
+        yield f"data: {json.dumps(event['data'])}\n\n"

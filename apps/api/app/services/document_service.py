@@ -15,6 +15,10 @@ from app.repositories.document_repository import DocumentRepository
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from app.schemas.document import DocumentRead
 from app.schemas.retrieval import DocumentUploadRead
+from app.services.document_processing_service import DocumentProcessingService
+
+PDF_CONTENT_TYPES = {"application/pdf", "application/x-pdf"}
+PDF_SIGNATURE = b"%PDF-"
 
 
 class DocumentService:
@@ -32,6 +36,12 @@ class DocumentService:
         self.embedding_provider = embedding_provider
         self.documents = DocumentRepository(session)
         self.knowledge_bases = KnowledgeBaseRepository(session)
+        self.processor = DocumentProcessingService(
+            documents=self.documents,
+            parser=self.parser,
+            chunker=self.chunker,
+            embedding_provider=self.embedding_provider,
+        )
 
     async def upload_pdf(
         self,
@@ -43,12 +53,13 @@ class DocumentService:
         if knowledge_base is None:
             raise LookupError("Knowledge base not found.")
 
-        if upload.content_type not in {"application/pdf", "application/x-pdf"}:
-            raise ValueError("Only PDF uploads are supported.")
-
         original_filename = upload.filename or "upload.pdf"
-        if not original_filename.lower().endswith(".pdf"):
-            raise ValueError("Only PDF uploads are supported.")
+        content = await upload.read()
+        self._validate_pdf_upload(
+            filename=original_filename,
+            content_type=upload.content_type,
+            content=content,
+        )
 
         upload_dir = Path(settings.upload_dir)
         upload_dir.mkdir(parents=True, exist_ok=True)
@@ -56,28 +67,23 @@ class DocumentService:
         storage_key = f"{knowledge_base_id}/{uuid4()}-{safe_name}"
         target_path = upload_dir / storage_key
         target_path.parent.mkdir(parents=True, exist_ok=True)
-
-        content = await upload.read()
         target_path.write_bytes(content)
 
-        document = self.documents.create_pending(
-            knowledge_base_id=knowledge_base_id,
-            filename=safe_name,
-            original_filename=original_filename,
-            mime_type=upload.content_type or "application/pdf",
-            storage_key=storage_key,
-        )
+        try:
+            document = self.documents.create_pending(
+                knowledge_base_id=knowledge_base_id,
+                filename=safe_name,
+                original_filename=original_filename,
+                mime_type=upload.content_type or "application/pdf",
+                storage_key=storage_key,
+            )
+        except Exception:
+            if target_path.exists():
+                target_path.unlink()
+            raise
 
         try:
-            self.documents.mark_processing(document)
-            pages = self.parser.parse(target_path)
-            chunks = self.chunker.chunk_pages(pages)
-            if not chunks:
-                raise ValueError("No extractable text was found in the PDF.")
-
-            embeddings = self.embedding_provider.embed_texts([chunk.content for chunk in chunks])
-            self.documents.add_chunks(document=document, chunks=chunks, embeddings=embeddings)
-            self.documents.mark_processed(document, page_count=len(pages))
+            result = self.processor.process_pdf(document=document, target_path=target_path)
             self.session.commit()
             self.session.refresh(document)
             return DocumentUploadRead(
@@ -86,7 +92,7 @@ class DocumentService:
                 original_filename=document.original_filename,
                 status=document.status,
                 page_count=document.page_count,
-                chunk_count=len(chunks),
+                chunk_count=result.chunk_count,
                 error_message=document.error_message,
             )
         except Exception as exc:
@@ -133,19 +139,11 @@ class DocumentService:
 
         target_path = Path(settings.upload_dir) / document.storage_key
         try:
-            self.documents.mark_processing(document)
-            self.documents.clear_chunks(document)
-            if not target_path.exists():
-                raise FileNotFoundError("Stored document file not found.")
-
-            pages = self.parser.parse(target_path)
-            chunks = self.chunker.chunk_pages(pages)
-            if not chunks:
-                raise ValueError("No extractable text was found in the PDF.")
-
-            embeddings = self.embedding_provider.embed_texts([chunk.content for chunk in chunks])
-            self.documents.add_chunks(document=document, chunks=chunks, embeddings=embeddings)
-            self.documents.mark_processed(document, page_count=len(pages))
+            self.processor.process_pdf(
+                document=document,
+                target_path=target_path,
+                replace_existing=True,
+            )
             self.session.commit()
             return self.get(document_id)
         except Exception as exc:
@@ -155,3 +153,26 @@ class DocumentService:
 
     def _safe_filename(self, filename: str) -> str:
         return re.sub(r"[^A-Za-z0-9._-]+", "-", filename).strip("-") or "upload.pdf"
+
+    def _validate_pdf_upload(
+        self,
+        *,
+        filename: str,
+        content_type: str | None,
+        content: bytes,
+    ) -> None:
+        if content_type not in PDF_CONTENT_TYPES:
+            raise ValueError("Only PDF uploads are supported.")
+
+        if not filename.lower().endswith(".pdf"):
+            raise ValueError("Only PDF uploads are supported.")
+
+        if not content:
+            raise ValueError("Uploaded PDF cannot be empty.")
+
+        if len(content) > settings.max_upload_bytes:
+            max_mb = settings.max_upload_bytes // (1024 * 1024)
+            raise ValueError(f"Uploaded PDF must be {max_mb} MB or smaller.")
+
+        if not content.startswith(PDF_SIGNATURE):
+            raise ValueError("Uploaded file does not appear to be a valid PDF.")

@@ -41,10 +41,11 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://knowledge_user:knowledge_password@db:5432/knowledge_assistant
       LLM_PROVIDER: gemini
-      LLM_MODEL: gemini-2.5-flash-lite
+      LLM_MODEL: gemini-flash-lite-latest
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       EMBEDDING_PROVIDER: local
       EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+      RETRIEVAL_MIN_SIMILARITY_SCORE: 0.05
       CORS_ORIGINS: http://localhost:3000
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "1"

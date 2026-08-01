@@ -14,3 +14,4 @@ class RetrievedChunk:
     content: str
     page_number: int | None
     chunk_index: int
+    metadata: dict[str, object]

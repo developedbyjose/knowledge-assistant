@@ -1,0 +1,631 @@
+"use client"
+
+import { useCallback, useEffect, useMemo, useState } from "react"
+import {
+  AlertCircleIcon,
+  BotIcon,
+  MessageSquareIcon,
+  PlusIcon,
+  RefreshCwIcon,
+  Trash2Icon,
+  UserIcon,
+} from "lucide-react"
+
+import { ChatComposer } from "@/components/chat/chat-composer"
+import { SourcePanel } from "@/components/chat/source-panel"
+import { PageContainer } from "@/components/layout/page-container"
+import { PageHeader } from "@/components/layout/page-header"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Skeleton } from "@/components/ui/skeleton"
+import {
+  AnswerCitation,
+  Conversation,
+  ConversationMessage,
+  KnowledgeBase,
+  RetrievalResult,
+  createConversation,
+  createKnowledgeBase,
+  deleteConversation,
+  listConversations,
+  listKnowledgeBases,
+  streamConversationMessage,
+} from "@/lib/api"
+import { cn } from "@/lib/utils"
+
+type BusyState = "loading" | "idle" | "creating" | "sending" | "refreshing"
+
+type SourceState = {
+  citations: AnswerCitation[]
+  sourceChunks: RetrievalResult[]
+}
+
+const EMPTY_SOURCES: SourceState = {
+  citations: [],
+  sourceChunks: [],
+}
+
+export default function ChatPage() {
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([])
+  const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState("")
+  const [conversations, setConversations] = useState<Conversation[]>([])
+  const [selectedConversationId, setSelectedConversationId] = useState("")
+  const [latestSources, setLatestSources] = useState<SourceState>(EMPTY_SOURCES)
+  const [busyState, setBusyState] = useState<BusyState>("loading")
+  const [error, setError] = useState<string | null>(null)
+  const [conversationToDeleteId, setConversationToDeleteId] = useState<string | null>(null)
+
+  const selectedConversation = useMemo(
+    () => conversations.find((conversation) => conversation.id === selectedConversationId),
+    [conversations, selectedConversationId]
+  )
+
+  const visibleConversations = useMemo(
+    () =>
+      conversations.filter(
+        (conversation) => conversation.knowledge_base_id === selectedKnowledgeBaseId
+      ),
+    [conversations, selectedKnowledgeBaseId]
+  )
+
+  const conversationToDelete = useMemo(
+    () => conversations.find((conversation) => conversation.id === conversationToDeleteId),
+    [conversations, conversationToDeleteId]
+  )
+
+  const loadData = useCallback(async () => {
+    setBusyState((current) => (current === "idle" ? "refreshing" : "loading"))
+    setError(null)
+
+    try {
+      let bases = await listKnowledgeBases()
+      if (bases.length === 0) {
+        const created = await createKnowledgeBase({
+          name: "Retrieval Lab",
+          description: "Default workspace for grounded chat.",
+        })
+        bases = [created]
+      }
+
+      const chats = await listConversations()
+      const selectedBaseId = selectedKnowledgeBaseId || bases[0]?.id || ""
+      const selectedChat =
+        chats.find((conversation) => conversation.id === selectedConversationId) ??
+        chats.find((conversation) => conversation.knowledge_base_id === selectedBaseId)
+
+      setKnowledgeBases(bases)
+      setSelectedKnowledgeBaseId(selectedBaseId)
+      setConversations(chats)
+      setSelectedConversationId(selectedChat?.id ?? "")
+      setLatestSources(EMPTY_SOURCES)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setBusyState("idle")
+    }
+  }, [selectedConversationId, selectedKnowledgeBaseId])
+
+  useEffect(() => {
+    let active = true
+
+    async function loadInitialData() {
+      try {
+        const bases = await ensureKnowledgeBases()
+        const chats = await listConversations()
+        if (!active) {
+          return
+        }
+
+        const selectedBaseId = bases[0]?.id ?? ""
+        const selectedChat = chats.find(
+          (conversation) => conversation.knowledge_base_id === selectedBaseId
+        )
+
+        setKnowledgeBases(bases)
+        setSelectedKnowledgeBaseId(selectedBaseId)
+        setConversations(chats)
+        setSelectedConversationId(selectedChat?.id ?? "")
+        setLatestSources(EMPTY_SOURCES)
+      } catch (caught) {
+        if (active) {
+          setError(errorMessage(caught))
+        }
+      } finally {
+        if (active) {
+          setBusyState("idle")
+        }
+      }
+    }
+
+    void loadInitialData()
+
+    return () => {
+      active = false
+    }
+  }, [])
+
+  async function handleNewChat() {
+    if (!selectedKnowledgeBaseId) {
+      return
+    }
+
+    try {
+      setBusyState("creating")
+      setError(null)
+      const created = await createConversation({
+        knowledge_base_id: selectedKnowledgeBaseId,
+        title: "New chat",
+      })
+      setConversations((current) => [created, ...current])
+      setSelectedConversationId(created.id)
+      setLatestSources(EMPTY_SOURCES)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setBusyState("idle")
+    }
+  }
+
+  async function handleDeleteConversation(conversationId: string) {
+    const conversation = conversations.find((current) => current.id === conversationId)
+    if (!conversation || isSending) {
+      return
+    }
+
+    try {
+      setBusyState("refreshing")
+      setError(null)
+      await deleteConversation(conversationId)
+      const nextConversations = conversations.filter((current) => current.id !== conversationId)
+      const nextSelectedConversation = nextConversations.find(
+        (current) => current.knowledge_base_id === selectedKnowledgeBaseId
+      )
+
+      setConversations(nextConversations)
+      setSelectedConversationId(nextSelectedConversation?.id ?? "")
+      setLatestSources(EMPTY_SOURCES)
+      setConversationToDeleteId(null)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setBusyState("idle")
+    }
+  }
+
+  async function handleSend(content: string) {
+    if (!selectedKnowledgeBaseId) {
+      setError("Choose a knowledge base before sending a message.")
+      return
+    }
+
+    setBusyState("sending")
+    setError(null)
+    setLatestSources(EMPTY_SOURCES)
+
+    const activeConversation = await ensureConversation(content)
+    if (!activeConversation) {
+      setBusyState("idle")
+      return
+    }
+
+    let pendingAssistantId = ""
+
+    try {
+      await streamConversationMessage(activeConversation.id, content, (event) => {
+        if (event.event === "message_start") {
+          pendingAssistantId = `pending-${event.data.user_message.id}`
+          const pendingAssistant: ConversationMessage = {
+            id: pendingAssistantId,
+            conversation_id: activeConversation.id,
+            role: "assistant",
+            content: "",
+            model_name: null,
+            created_at: event.data.user_message.created_at,
+          }
+          setConversations((current) =>
+            upsertConversationMessage(current, activeConversation.id, event.data.user_message)
+          )
+          setConversations((current) =>
+            upsertConversationMessage(current, activeConversation.id, pendingAssistant)
+          )
+        }
+
+        if (event.event === "token") {
+          setConversations((current) =>
+            updateMessageContent(
+              current,
+              activeConversation.id,
+              pendingAssistantId,
+              event.data.content
+            )
+          )
+        }
+
+        if (event.event === "sources") {
+          setLatestSources({
+            citations: event.data.citations,
+            sourceChunks: event.data.source_chunks,
+          })
+        }
+
+        if (event.event === "message_done") {
+          pendingAssistantId = event.data.assistant_message.id
+          setConversations((current) =>
+            replaceConversation(current, event.data.conversation)
+          )
+        }
+
+        if (event.event === "error") {
+          setError(event.data.detail)
+          if (pendingAssistantId) {
+            setConversations((current) =>
+              setMessageContent(
+                current,
+                activeConversation.id,
+                pendingAssistantId,
+                `Response failed: ${event.data.detail}`
+              )
+            )
+          }
+        }
+      })
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setBusyState("idle")
+    }
+  }
+
+  async function ensureConversation(firstMessage: string): Promise<Conversation | null> {
+    if (selectedConversation) {
+      return selectedConversation
+    }
+
+    try {
+      const created = await createConversation({
+        knowledge_base_id: selectedKnowledgeBaseId,
+        title: firstMessage.slice(0, 80),
+      })
+      setConversations((current) => [created, ...current])
+      setSelectedConversationId(created.id)
+      return created
+    } catch (caught) {
+      setError(errorMessage(caught))
+      return null
+    }
+  }
+
+  const isBusy = busyState !== "idle"
+  const isSending = busyState === "sending"
+
+  return (
+    <PageContainer size="wide" className="h-screen min-h-screen gap-4 py-4">
+      <PageHeader
+        title="Chat"
+        description="Ask grounded questions against indexed knowledge base documents."
+        actions={
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="Refresh chat data"
+              onClick={() => void loadData()}
+              disabled={isBusy}
+            >
+              <RefreshCwIcon className={cn("size-4", busyState === "refreshing" && "animate-spin")} />
+            </Button>
+            <Button onClick={handleNewChat} disabled={!selectedKnowledgeBaseId || isBusy}>
+              <PlusIcon className="size-4" />
+              New chat
+            </Button>
+          </div>
+        }
+      />
+
+      {error ? (
+        <Alert variant="destructive">
+          <AlertCircleIcon className="size-4" />
+          <AlertTitle>Chat request failed</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden rounded-lg border bg-background lg:grid-cols-[260px_minmax(0,1fr)_340px]">
+        <aside className="flex min-h-0 flex-col border-b lg:border-r lg:border-b-0">
+          <div className="space-y-2 border-b p-4">
+            <label htmlFor="knowledge-base" className="text-sm font-medium">
+              Knowledge base
+            </label>
+            <select
+              id="knowledge-base"
+              value={selectedKnowledgeBaseId}
+              onChange={(event) => {
+                setSelectedKnowledgeBaseId(event.target.value)
+                const nextConversation = conversations.find(
+                  (conversation) => conversation.knowledge_base_id === event.target.value
+                )
+                setSelectedConversationId(nextConversation?.id ?? "")
+                setLatestSources(EMPTY_SOURCES)
+              }}
+              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {knowledgeBases.map((knowledgeBase) => (
+                <option key={knowledgeBase.id} value={knowledgeBase.id}>
+                  {knowledgeBase.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="space-y-2 p-3">
+              {busyState === "loading" ? (
+                <>
+                  <Skeleton className="h-16 w-full" />
+                  <Skeleton className="h-16 w-full" />
+                </>
+              ) : visibleConversations.length === 0 ? (
+                <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                  No conversations yet.
+                </div>
+              ) : (
+                visibleConversations.map((conversation) => (
+                  <div
+                    key={conversation.id}
+                    className={cn(
+                      "group flex items-start gap-2 rounded-lg border p-2 transition-colors hover:bg-muted",
+                      conversation.id === selectedConversationId && "border-primary bg-muted"
+                    )}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedConversationId(conversation.id)
+                        setLatestSources(EMPTY_SOURCES)
+                      }}
+                      className="min-w-0 flex-1 rounded-md px-1 py-1 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <span className="block truncate font-medium">{conversation.title}</span>
+                      <span className="mt-1 block text-xs text-muted-foreground">
+                        {conversation.messages.length} messages
+                      </span>
+                    </button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Delete ${conversation.title}`}
+                      className="size-8 shrink-0 text-muted-foreground hover:text-destructive"
+                      disabled={isSending}
+                      onClick={() => setConversationToDeleteId(conversation.id)}
+                    >
+                      <Trash2Icon className="size-4" />
+                    </Button>
+                  </div>
+                ))
+              )}
+            </div>
+          </ScrollArea>
+        </aside>
+
+        <section className="flex min-h-0 flex-col">
+          <div className="flex items-center justify-between border-b px-4 py-3">
+            <div className="min-w-0">
+              <h2 className="truncate text-sm font-medium">
+                {selectedConversation?.title ?? "New grounded chat"}
+              </h2>
+              <p className="text-xs text-muted-foreground">
+                Responses are limited to retrieved document context.
+              </p>
+            </div>
+            <Badge variant="outline">SSE</Badge>
+          </div>
+
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4">
+              {!selectedConversation || selectedConversation.messages.length === 0 ? (
+                <div className="flex min-h-80 flex-col items-center justify-center rounded-lg border border-dashed p-8 text-center">
+                  <MessageSquareIcon className="size-8 text-muted-foreground" />
+                  <h3 className="mt-3 text-lg font-semibold">Start a grounded conversation</h3>
+                  <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
+                    Ask a question after uploading processed documents to the selected knowledge base.
+                  </p>
+                </div>
+              ) : (
+                selectedConversation.messages.map((message) => (
+                  <MessageBubble key={message.id} message={message} />
+                ))
+              )}
+            </div>
+          </ScrollArea>
+
+          <ChatComposer
+            disabled={!selectedKnowledgeBaseId}
+            isSending={isSending}
+            onSend={handleSend}
+          />
+        </section>
+
+        <SourcePanel
+          citations={latestSources.citations}
+          sourceChunks={latestSources.sourceChunks}
+        />
+      </div>
+
+      <Dialog
+        open={conversationToDeleteId !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setConversationToDeleteId(null)
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Conversation</DialogTitle>
+            <DialogDescription>
+              This will permanently delete{" "}
+              <span className="font-medium text-foreground">
+                {conversationToDelete?.title ?? "this conversation"}
+              </span>{" "}
+              and all of its messages.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
+            <Button
+              variant="destructive"
+              disabled={!conversationToDelete || busyState === "refreshing" || isSending}
+              onClick={() => {
+                if (conversationToDelete) {
+                  void handleDeleteConversation(conversationToDelete.id)
+                }
+              }}
+            >
+              <Trash2Icon className="size-4" />
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </PageContainer>
+  )
+}
+
+function MessageBubble({ message }: { message: ConversationMessage }) {
+  const isAssistant = message.role === "assistant"
+
+  return (
+    <div className={cn("flex gap-3", isAssistant ? "justify-start" : "justify-end")}>
+      {isAssistant ? (
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-muted">
+          <BotIcon className="size-4" />
+        </div>
+      ) : null}
+      <div
+        className={cn(
+          "max-w-[80%] rounded-lg border px-4 py-3 text-sm leading-6",
+          isAssistant ? "bg-background" : "bg-primary text-primary-foreground"
+        )}
+      >
+        {message.content ? (
+          <p className="whitespace-pre-wrap">{message.content}</p>
+        ) : (
+          <span className="text-muted-foreground">Generating response...</span>
+        )}
+      </div>
+      {!isAssistant ? (
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-background">
+          <UserIcon className="size-4" />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function replaceConversation(
+  conversations: Conversation[],
+  replacement: Conversation
+): Conversation[] {
+  return conversations.map((conversation) =>
+    conversation.id === replacement.id ? replacement : conversation
+  )
+}
+
+function upsertConversationMessage(
+  conversations: Conversation[],
+  conversationId: string,
+  message: ConversationMessage
+): Conversation[] {
+  return conversations.map((conversation) => {
+    if (conversation.id !== conversationId) {
+      return conversation
+    }
+
+    const exists = conversation.messages.some((current) => current.id === message.id)
+    return {
+      ...conversation,
+      messages: exists
+        ? conversation.messages.map((current) => (current.id === message.id ? message : current))
+        : [...conversation.messages, message],
+    }
+  })
+}
+
+function updateMessageContent(
+  conversations: Conversation[],
+  conversationId: string,
+  messageId: string,
+  token: string
+): Conversation[] {
+  return conversations.map((conversation) => {
+    if (conversation.id !== conversationId) {
+      return conversation
+    }
+
+    return {
+      ...conversation,
+      messages: conversation.messages.map((message) =>
+        message.id === messageId
+          ? {
+              ...message,
+              content: `${message.content}${token}`,
+            }
+          : message
+      ),
+    }
+  })
+}
+
+function setMessageContent(
+  conversations: Conversation[],
+  conversationId: string,
+  messageId: string,
+  content: string
+): Conversation[] {
+  return conversations.map((conversation) => {
+    if (conversation.id !== conversationId) {
+      return conversation
+    }
+
+    return {
+      ...conversation,
+      messages: conversation.messages.map((message) =>
+        message.id === messageId
+          ? {
+              ...message,
+              content,
+            }
+          : message
+      ),
+    }
+  })
+}
+
+function errorMessage(caught: unknown): string {
+  return caught instanceof Error ? caught.message : "Something went wrong."
+}
+
+async function ensureKnowledgeBases(): Promise<KnowledgeBase[]> {
+  const bases = await listKnowledgeBases()
+  if (bases.length > 0) {
+    return bases
+  }
+
+  const created = await createKnowledgeBase({
+    name: "Retrieval Lab",
+    description: "Default workspace for grounded chat.",
+  })
+  return [created]
+}

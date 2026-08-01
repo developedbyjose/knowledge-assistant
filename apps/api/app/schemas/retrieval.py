@@ -30,8 +30,25 @@ class RetrievalResult(BaseModel):
     content: str
     page_number: Optional[int]
     chunk_index: int
+    metadata: dict[str, object] = Field(default_factory=dict)
 
 
 class RetrievalResults(BaseModel):
     question: str
     results: list[RetrievalResult]
+
+
+class AnswerCitation(BaseModel):
+    chunk_id: UUID
+    document_id: UUID
+    filename: str
+    page_number: Optional[int]
+    chunk_index: int
+    rank: int
+
+
+class CitedAnswer(BaseModel):
+    question: str
+    answer: str
+    citations: list[AnswerCitation]
+    source_chunks: list[RetrievalResult]

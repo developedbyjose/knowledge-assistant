@@ -35,16 +35,21 @@ class TextChunker:
             while start < len(words):
                 end = min(start + self.chunk_size, len(words))
                 content = " ".join(words[start:end])
+                token_count = len(content.split())
                 chunks.append(
                     Chunk(
                         chunk_index=chunk_index,
                         content=content,
                         page_number=page.page_number,
-                        token_count=len(content.split()),
+                        token_count=token_count,
                         metadata={
+                            "source": "pdf",
                             "page_number": page.page_number,
                             "word_start": start,
                             "word_end": end,
+                            "chunk_size": self.chunk_size,
+                            "overlap": self.overlap,
+                            "token_count": token_count,
                         },
                     )
                 )
