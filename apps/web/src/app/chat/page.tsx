@@ -219,26 +219,30 @@ export default function ChatPage() {
       return
     }
 
-    let pendingAssistantId = ""
+    const pendingUserMessage = createOptimisticMessage("user", content, activeConversation.id)
+    const pendingAssistantMessage = createOptimisticMessage("assistant", "", activeConversation.id)
+    let pendingUserMessageId = pendingUserMessage.id
+    let pendingAssistantId = pendingAssistantMessage.id
+
+    setConversations((current) =>
+      upsertConversationMessage(current, activeConversation.id, pendingUserMessage)
+    )
+    setConversations((current) =>
+      upsertConversationMessage(current, activeConversation.id, pendingAssistantMessage)
+    )
 
     try {
       await streamConversationMessage(activeConversation.id, content, (event) => {
         if (event.event === "message_start") {
-          pendingAssistantId = `pending-${event.data.user_message.id}`
-          const pendingAssistant: ConversationMessage = {
-            id: pendingAssistantId,
-            conversation_id: activeConversation.id,
-            role: "assistant",
-            content: "",
-            model_name: null,
-            created_at: event.data.user_message.created_at,
-          }
           setConversations((current) =>
-            upsertConversationMessage(current, activeConversation.id, event.data.user_message)
+            replaceMessageById(
+              current,
+              activeConversation.id,
+              pendingUserMessageId,
+              event.data.user_message
+            )
           )
-          setConversations((current) =>
-            upsertConversationMessage(current, activeConversation.id, pendingAssistant)
-          )
+          pendingUserMessageId = event.data.user_message.id
         }
 
         if (event.event === "token") {
@@ -282,6 +286,14 @@ export default function ChatPage() {
       })
     } catch (caught) {
       setError(errorMessage(caught))
+      setConversations((current) =>
+        setMessageContent(
+          current,
+          activeConversation.id,
+          pendingAssistantId,
+          `Response failed: ${errorMessage(caught)}`
+        )
+      )
     } finally {
       setBusyState("idle")
     }
@@ -522,7 +534,7 @@ function MessageBubble({ message }: { message: ConversationMessage }) {
         {message.content ? (
           <p className="whitespace-pre-wrap">{message.content}</p>
         ) : (
-          <span className="text-muted-foreground">Generating response...</span>
+          <TypingIndicator />
         )}
       </div>
       {!isAssistant ? (
@@ -532,6 +544,36 @@ function MessageBubble({ message }: { message: ConversationMessage }) {
       ) : null}
     </div>
   )
+}
+
+function TypingIndicator() {
+  return (
+    <div
+      className="flex h-6 items-center gap-1"
+      role="status"
+      aria-label="Assistant is generating a response"
+    >
+      <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.2s]" />
+      <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.1s]" />
+      <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground" />
+    </div>
+  )
+}
+
+function createOptimisticMessage(
+  role: ConversationMessage["role"],
+  content: string,
+  conversationId: string
+): ConversationMessage {
+  const now = new Date().toISOString()
+  return {
+    id: `pending-${role}-${crypto.randomUUID()}`,
+    conversation_id: conversationId,
+    role,
+    content,
+    model_name: null,
+    created_at: now,
+  }
 }
 
 function replaceConversation(
@@ -583,6 +625,26 @@ function updateMessageContent(
               content: `${message.content}${token}`,
             }
           : message
+      ),
+    }
+  })
+}
+
+function replaceMessageById(
+  conversations: Conversation[],
+  conversationId: string,
+  messageId: string,
+  replacement: ConversationMessage
+): Conversation[] {
+  return conversations.map((conversation) => {
+    if (conversation.id !== conversationId) {
+      return conversation
+    }
+
+    return {
+      ...conversation,
+      messages: conversation.messages.map((message) =>
+        message.id === messageId ? replacement : message
       ),
     }
   })
