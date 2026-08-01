@@ -12,7 +12,7 @@ from app.api.v1.dependencies import (
 )
 from app.main import app
 from app.rag.providers.chat import ChatModelError
-from app.schemas.conversation import ConversationMessageResponse, ConversationRead, MessageRead
+from app.schemas.conversation import ConversationMessageResponse, ConversationRead, MessageFeedbackRead, MessageRead
 from app.schemas.document import DocumentRead
 from app.schemas.knowledge_base import KnowledgeBaseRead
 from app.schemas.retrieval import AnswerCitation, CitedAnswer, DocumentUploadRead, RetrievalResult, RetrievalResults
@@ -220,7 +220,18 @@ class FakeConversationService:
     def get(self, conversation_id):  # noqa: ANN001, ANN201
         if conversation_id == MISSING_ID:
             raise LookupError("Conversation not found.")
-        return self._conversation(id=conversation_id)
+        return self._conversation(
+            id=conversation_id,
+            messages=[
+                self._message(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content="Grounded answer [1].",
+                    model_name="gemini-flash-lite-latest",
+                    with_sources=True,
+                )
+            ],
+        )
 
     def delete(self, conversation_id):  # noqa: ANN001, ANN201
         if conversation_id == MISSING_ID:
@@ -237,6 +248,7 @@ class FakeConversationService:
             role="assistant",
             content="Grounded answer [1].",
             model_name="gemini-flash-lite-latest",
+            with_sources=True,
         )
         chunk_id = uuid4()
         document_id = uuid4()
@@ -276,6 +288,7 @@ class FakeConversationService:
             role="assistant",
             content="Grounded answer [1].",
             model_name="gemini-flash-lite-latest",
+            with_sources=True,
         )
         yield {
             "event": "message_start",
@@ -297,6 +310,18 @@ class FakeConversationService:
             },
         }
 
+    def record_feedback(self, *, message_id, rating):  # noqa: ANN001, ANN201
+        if message_id == MISSING_ID:
+            raise LookupError("Message not found.")
+        if message_id == UUID("00000000-0000-0000-0000-000000000400"):
+            raise ValueError("Feedback can only be recorded for assistant messages.")
+        return MessageFeedbackRead(
+            id=uuid4(),
+            message_id=message_id,
+            rating=rating,
+            created_at=datetime.now(timezone.utc),
+        )
+
     def _conversation(self, *, id=None, knowledge_base_id=None, title="New chat", messages=None):  # noqa: A002, ANN001, ANN201
         return ConversationRead(
             id=id or self.conversation_id,
@@ -308,7 +333,9 @@ class FakeConversationService:
             messages=messages or [],
         )
 
-    def _message(self, *, conversation_id, role, content, model_name=None):  # noqa: ANN001, ANN201
+    def _message(self, *, conversation_id, role, content, model_name=None, with_sources=False):  # noqa: ANN001, ANN201
+        chunk_id = uuid4()
+        document_id = uuid4()
         return MessageRead(
             id=uuid4(),
             conversation_id=conversation_id,
@@ -316,6 +343,34 @@ class FakeConversationService:
             content=content,
             model_name=model_name,
             created_at=datetime.now(timezone.utc),
+            citations=[
+                AnswerCitation(
+                    chunk_id=chunk_id,
+                    document_id=document_id,
+                    filename="policy.pdf",
+                    page_number=1,
+                    chunk_index=0,
+                    rank=1,
+                    similarity_score=0.9,
+                )
+            ]
+            if with_sources
+            else [],
+            source_chunks=[
+                RetrievalResult(
+                    chunk_id=chunk_id,
+                    document_id=document_id,
+                    filename="policy.pdf",
+                    rank=1,
+                    similarity_score=0.9,
+                    content="Policy evidence.",
+                    page_number=1,
+                    chunk_index=0,
+                    metadata={"page_number": 1},
+                )
+            ]
+            if with_sources
+            else [],
         )
 
 
@@ -710,6 +765,7 @@ def test_get_conversation_route() -> None:
     app.dependency_overrides.clear()
     assert response.status_code == 200
     assert response.json()["id"] == str(conversation_id)
+    assert response.json()["messages"][0]["source_chunks"][0]["filename"] == "policy.pdf"
 
 
 def test_delete_conversation_route() -> None:
@@ -766,7 +822,63 @@ def test_create_conversation_message_sse_route() -> None:
     assert response.headers["content-type"].startswith("text/event-stream")
     assert "event: message_start" in response.text
     assert "event: token" in response.text
+    assert "event: sources" in response.text
     assert "event: message_done" in response.text
+
+
+def test_record_message_feedback_route() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+    message_id = uuid4()
+
+    response = client.post(
+        f"/api/v1/messages/{message_id}/feedback",
+        json={"rating": "positive"},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json()["message_id"] == str(message_id)
+    assert response.json()["rating"] == "positive"
+
+
+def test_record_message_feedback_missing_message_returns_404() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/messages/{MISSING_ID}/feedback",
+        json={"rating": "negative"},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 404
+
+
+def test_record_message_feedback_rejects_non_assistant_message() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/messages/00000000-0000-0000-0000-000000000400/feedback",
+        json={"rating": "negative"},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 400
+
+
+def test_record_message_feedback_validates_rating() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/messages/{uuid4()}/feedback",
+        json={"rating": "mixed"},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 422
 
 
 def test_create_conversation_missing_knowledge_base_returns_404() -> None:

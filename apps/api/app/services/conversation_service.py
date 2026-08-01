@@ -16,7 +16,15 @@ from app.rag.generation.prompts import (
 from app.rag.providers.chat import ChatModel, ChatModelError
 from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
-from app.schemas.conversation import ConversationMessageResponse, ConversationRead, MessageRead
+from app.models.message import Message
+from app.models.message_citation import MessageCitation
+from app.models.message_feedback import MessageFeedback
+from app.schemas.conversation import (
+    ConversationMessageResponse,
+    ConversationRead,
+    MessageFeedbackRead,
+    MessageRead,
+)
 from app.schemas.retrieval import AnswerCitation, RetrievalResult
 from app.services.answer_service import SOURCE_REFERENCE_PATTERN
 from app.services.retrieval_service import RetrievalService
@@ -45,17 +53,14 @@ class ConversationService:
         )
         self.session.commit()
         self.session.refresh(conversation)
-        return ConversationRead.model_validate(conversation, from_attributes=True)
+        return _conversation_read(conversation)
 
     def list(self) -> list[ConversationRead]:
-        return [
-            ConversationRead.model_validate(conversation, from_attributes=True)
-            for conversation in self.conversations.list()
-        ]
+        return [_conversation_read(conversation) for conversation in self.conversations.list()]
 
     def get(self, conversation_id: UUID) -> ConversationRead:
         conversation = self._get_required(conversation_id)
-        return ConversationRead.model_validate(conversation, from_attributes=True)
+        return _conversation_read(conversation)
 
     def delete(self, conversation_id: UUID) -> None:
         conversation = self._get_required(conversation_id)
@@ -92,13 +97,22 @@ class ConversationService:
             content=answer_text,
             model_name=settings.llm_model,
         )
+        self.conversations.add_citations(
+            message=assistant_message,
+            citations=citations,
+            source_chunks=source_chunks,
+        )
         self.session.commit()
         persisted = self._get_required(conversation_id)
 
         return ConversationMessageResponse(
-            conversation=ConversationRead.model_validate(persisted, from_attributes=True),
-            user_message=MessageRead.model_validate(user_message, from_attributes=True),
-            assistant_message=MessageRead.model_validate(assistant_message, from_attributes=True),
+            conversation=_conversation_read(persisted),
+            user_message=_message_read(user_message),
+            assistant_message=_message_read(
+                assistant_message,
+                citations=citations,
+                source_chunks=source_chunks,
+            ),
             citations=citations,
             source_chunks=source_chunks,
         )
@@ -121,7 +135,7 @@ class ConversationService:
                 "event": "message_start",
                 "data": {
                     "conversation_id": str(conversation.id),
-                    "user_message": MessageRead.model_validate(user_message, from_attributes=True).model_dump(mode="json"),
+                    "user_message": _message_read(user_message).model_dump(mode="json"),
                 },
             }
 
@@ -147,6 +161,11 @@ class ConversationService:
                 content=answer_text,
                 model_name=settings.llm_model,
             )
+            self.conversations.add_citations(
+                message=assistant_message,
+                citations=citations,
+                source_chunks=source_chunks,
+            )
             self.session.commit()
             persisted = self._get_required(conversation_id)
             yield {
@@ -159,13 +178,27 @@ class ConversationService:
             yield {
                 "event": "message_done",
                 "data": {
-                    "conversation": ConversationRead.model_validate(persisted, from_attributes=True).model_dump(mode="json"),
-                    "assistant_message": MessageRead.model_validate(assistant_message, from_attributes=True).model_dump(mode="json"),
+                    "conversation": _conversation_read(persisted).model_dump(mode="json"),
+                    "assistant_message": _message_read(
+                        assistant_message,
+                        citations=citations,
+                        source_chunks=source_chunks,
+                    ).model_dump(mode="json"),
                 },
             }
         except (LookupError, ValueError, ChatModelError) as exc:
             self.session.rollback()
             yield {"event": "error", "data": {"detail": str(exc)}}
+
+    def record_feedback(self, *, message_id: UUID, rating: str) -> MessageFeedbackRead:
+        message = self.conversations.get_message(message_id)
+        if message is None:
+            raise LookupError("Message not found.")
+        if message.role != "assistant":
+            raise ValueError("Feedback can only be recorded for assistant messages.")
+        feedback = self.conversations.record_feedback(message=message, rating=rating)
+        self.session.commit()
+        return MessageFeedbackRead.model_validate(feedback, from_attributes=True)
 
     def _get_required(self, conversation_id: UUID) -> Conversation:
         conversation = self.conversations.get(conversation_id)
@@ -227,6 +260,88 @@ def _citations_from_answer(
                 page_number=chunk.page_number,
                 chunk_index=chunk.chunk_index,
                 rank=chunk.rank,
+                similarity_score=chunk.similarity_score,
             )
         )
     return citations
+
+
+def _conversation_read(conversation: Conversation) -> ConversationRead:
+    return ConversationRead(
+        id=conversation.id,
+        user_id=conversation.user_id,
+        knowledge_base_id=conversation.knowledge_base_id,
+        title=conversation.title,
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+        messages=[_message_read(message) for message in conversation.messages],
+    )
+
+
+def _message_read(
+    message: Message,
+    *,
+    citations: list[AnswerCitation] | None = None,
+    source_chunks: list[RetrievalResult] | None = None,
+) -> MessageRead:
+    persisted_citations = getattr(message, "citations", []) or []
+    feedback = getattr(message, "feedback", None)
+    return MessageRead(
+        id=message.id,
+        conversation_id=message.conversation_id,
+        role=message.role,
+        content=message.content,
+        model_name=message.model_name,
+        created_at=message.created_at,
+        citations=citations if citations is not None else _citations_from_persisted(persisted_citations),
+        source_chunks=source_chunks
+        if source_chunks is not None
+        else _source_chunks_from_persisted(persisted_citations),
+        feedback_rating=_feedback_rating(feedback),
+    )
+
+
+def _citations_from_persisted(citations: list[MessageCitation]) -> list[AnswerCitation]:
+    mapped = []
+    for citation in citations:
+        chunk = citation.chunk
+        document = chunk.document
+        mapped.append(
+            AnswerCitation(
+                chunk_id=chunk.id,
+                document_id=document.id,
+                filename=document.original_filename,
+                page_number=chunk.page_number,
+                chunk_index=chunk.chunk_index,
+                rank=citation.rank,
+                similarity_score=citation.similarity_score,
+            )
+        )
+    return mapped
+
+
+def _source_chunks_from_persisted(citations: list[MessageCitation]) -> list[RetrievalResult]:
+    chunks = []
+    for citation in citations:
+        chunk = citation.chunk
+        document = chunk.document
+        chunks.append(
+            RetrievalResult(
+                chunk_id=chunk.id,
+                document_id=document.id,
+                filename=document.original_filename,
+                rank=citation.rank,
+                similarity_score=citation.similarity_score,
+                content=citation.quoted_text,
+                page_number=chunk.page_number,
+                chunk_index=chunk.chunk_index,
+                metadata=chunk.chunk_metadata,
+            )
+        )
+    return chunks
+
+
+def _feedback_rating(feedback: MessageFeedback | None) -> str | None:
+    if feedback is None:
+        return None
+    return feedback.rating

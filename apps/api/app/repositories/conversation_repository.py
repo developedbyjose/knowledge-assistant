@@ -7,7 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.conversation import Conversation
+from app.models.document_chunk import DocumentChunk
 from app.models.message import Message
+from app.models.message_citation import MessageCitation
+from app.models.message_feedback import MessageFeedback
+from app.schemas.retrieval import AnswerCitation, RetrievalResult
 
 
 class ConversationRepository:
@@ -33,7 +37,7 @@ class ConversationRepository:
     def list(self) -> list[Conversation]:
         statement = (
             select(Conversation)
-            .options(selectinload(Conversation.messages))
+            .options(_message_load_options())
             .order_by(Conversation.updated_at.desc(), Conversation.created_at.desc())
         )
         return list(self.session.scalars(statement))
@@ -41,8 +45,21 @@ class ConversationRepository:
     def get(self, conversation_id: UUID) -> Conversation | None:
         statement = (
             select(Conversation)
-            .options(selectinload(Conversation.messages))
+            .options(_message_load_options())
             .where(Conversation.id == conversation_id)
+        )
+        return self.session.scalars(statement).one_or_none()
+
+    def get_message(self, message_id: UUID) -> Message | None:
+        statement = (
+            select(Message)
+            .options(
+                selectinload(Message.citations)
+                .selectinload(MessageCitation.chunk)
+                .selectinload(DocumentChunk.document),
+                selectinload(Message.feedback),
+            )
+            .where(Message.id == message_id)
         )
         return self.session.scalars(statement).one_or_none()
 
@@ -65,6 +82,52 @@ class ConversationRepository:
         self.session.flush()
         return message
 
+    def add_citations(
+        self,
+        *,
+        message: Message,
+        citations: list[AnswerCitation],
+        source_chunks: list[RetrievalResult],
+    ) -> list[MessageCitation]:
+        chunks_by_id = {chunk.chunk_id: chunk for chunk in source_chunks}
+        rows = []
+        for citation in citations:
+            source_chunk = chunks_by_id.get(citation.chunk_id)
+            if source_chunk is None:
+                continue
+            rows.append(
+                MessageCitation(
+                    message_id=message.id,
+                    chunk_id=citation.chunk_id,
+                    rank=citation.rank,
+                    similarity_score=source_chunk.similarity_score,
+                    quoted_text=source_chunk.content,
+                )
+            )
+
+        self.session.add_all(rows)
+        self.session.flush()
+        return rows
+
+    def record_feedback(self, *, message: Message, rating: str) -> MessageFeedback:
+        feedback = message.feedback
+        if feedback is None:
+            feedback = MessageFeedback(message_id=message.id, rating=rating)
+            self.session.add(feedback)
+        else:
+            feedback.rating = rating
+        self.session.flush()
+        return feedback
+
     def delete(self, conversation: Conversation) -> None:
         self.session.delete(conversation)
         self.session.flush()
+
+
+def _message_load_options():
+    return selectinload(Conversation.messages).options(
+        selectinload(Message.citations)
+        .selectinload(MessageCitation.chunk)
+        .selectinload(DocumentChunk.document),
+        selectinload(Message.feedback),
+    )

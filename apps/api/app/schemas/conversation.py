@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.retrieval import AnswerCitation, RetrievalResult
 
 MessageRole = Literal["user", "assistant", "system"]
+FeedbackRating = Literal["positive", "negative"]
 
 
 class ConversationCreate(BaseModel):
@@ -29,6 +30,9 @@ class MessageRead(BaseModel):
     content: str
     model_name: Optional[str]
     created_at: datetime
+    citations: list[AnswerCitation] = Field(default_factory=list)
+    source_chunks: list[RetrievalResult] = Field(default_factory=list)
+    feedback_rating: Optional[FeedbackRating] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -51,3 +55,16 @@ class ConversationMessageResponse(BaseModel):
     assistant_message: MessageRead
     citations: list[AnswerCitation]
     source_chunks: list[RetrievalResult]
+
+
+class MessageFeedbackCreate(BaseModel):
+    rating: FeedbackRating
+
+
+class MessageFeedbackRead(BaseModel):
+    id: UUID
+    message_id: UUID
+    rating: FeedbackRating
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

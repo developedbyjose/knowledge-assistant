@@ -67,18 +67,32 @@ failed chat-provider calls return `502`.
   creates a chat thread, and returns it with an empty `messages` list.
 - `GET /api/v1/conversations` lists chat threads with ordered messages.
 - `GET /api/v1/conversations/{id}` returns one chat thread with ordered
-  messages.
+  messages. Assistant messages include persisted `citations`, `source_chunks`,
+  and optional `feedback_rating`.
 - `DELETE /api/v1/conversations/{id}` deletes a chat thread and its messages.
   Successful deletes return `204`.
 - `POST /api/v1/conversations/{id}/messages` accepts
   `{ "content": "...", "limit": 5, "stream": false }`, persists the user
   message, retrieves grounded context from the conversation knowledge base,
   persists the assistant response, and returns citations plus source chunks.
+- Assistant response citations are persisted as message-to-chunk mappings. Each
+  cited source includes document ID, filename, page number, chunk index,
+  retrieval rank, similarity score, and source preview text so reopened
+  conversations can show the same evidence.
 - The same message endpoint streams with Server-Sent Events when `stream` is
   true or the request `Accept` header includes `text/event-stream`.
 
 Streaming events are `message_start`, `token`, `sources`, `message_done`, and
 `error`. Route handlers only format HTTP/SSE responses; retrieval, prompt
 assembly, generation, and persistence stay in the service layer.
+
+## Feedback
+
+- `POST /api/v1/messages/{id}/feedback` accepts
+  `{ "rating": "positive" }` or `{ "rating": "negative" }` for assistant
+  messages.
+- The response includes feedback `id`, `message_id`, `rating`, and `created_at`.
+- Missing messages return `404`; feedback on user/system messages returns
+  `400`; invalid ratings return `422`.
 
 Missing knowledge bases or documents return `404`.
