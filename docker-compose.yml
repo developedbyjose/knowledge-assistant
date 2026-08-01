@@ -1,0 +1,85 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: knowledge-assistant-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: knowledge_assistant
+      POSTGRES_USER: knowledge_user
+      POSTGRES_PASSWORD: knowledge_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=40
+    mem_limit: 512m
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U knowledge_user -d knowledge_assistant"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: knowledge-assistant-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://knowledge_user:knowledge_password@db:5432/knowledge_assistant
+      LLM_PROVIDER: gemini
+      LLM_MODEL: gemini-2.5-flash-lite
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      EMBEDDING_PROVIDER: local
+      EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+      CORS_ORIGINS: http://localhost:3000
+      TOKENIZERS_PARALLELISM: "false"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./apps/api:/app
+      - uploaded_files:/app/uploads
+      - huggingface_cache:/root/.cache/huggingface
+    mem_limit: 1g
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    container_name: knowledge-assistant-web
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./apps/web:/app
+      - /app/node_modules
+      - /app/.next
+    mem_limit: 768m
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  uploaded_files:
+  huggingface_cache:
