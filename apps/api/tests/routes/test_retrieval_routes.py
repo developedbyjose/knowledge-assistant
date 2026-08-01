@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 from fastapi.testclient import TestClient
 
 from app.api.v1.dependencies import (
+    get_conversation_service,
     get_document_service,
     get_answer_service,
     get_knowledge_base_service,
@@ -11,6 +12,7 @@ from app.api.v1.dependencies import (
 )
 from app.main import app
 from app.rag.providers.chat import ChatModelError
+from app.schemas.conversation import ConversationMessageResponse, ConversationRead, MessageRead
 from app.schemas.document import DocumentRead
 from app.schemas.knowledge_base import KnowledgeBaseRead
 from app.schemas.retrieval import AnswerCitation, CitedAnswer, DocumentUploadRead, RetrievalResult, RetrievalResults
@@ -194,6 +196,126 @@ class FakeAnswerService:
                     metadata={"source": "pdf", "page_number": 1},
                 )
             ],
+        )
+
+
+class FakeConversationService:
+    def __init__(self, *, error=None):  # noqa: ANN001
+        self.error = error
+        self.conversation_id = uuid4()
+        self.knowledge_base_id = uuid4()
+        self.user_message_id = uuid4()
+        self.assistant_message_id = uuid4()
+
+    def create(self, *, knowledge_base_id, title):  # noqa: ANN001, ANN201
+        if self.error:
+            raise self.error
+        if knowledge_base_id == MISSING_ID:
+            raise LookupError("Knowledge base not found.")
+        return self._conversation(knowledge_base_id=knowledge_base_id, title=title or "New chat")
+
+    def list(self):  # noqa: ANN201
+        return [self._conversation()]
+
+    def get(self, conversation_id):  # noqa: ANN001, ANN201
+        if conversation_id == MISSING_ID:
+            raise LookupError("Conversation not found.")
+        return self._conversation(id=conversation_id)
+
+    def delete(self, conversation_id):  # noqa: ANN001, ANN201
+        if conversation_id == MISSING_ID:
+            raise LookupError("Conversation not found.")
+
+    async def add_message(self, *, conversation_id, content, limit):  # noqa: ANN001, ANN201
+        if self.error:
+            raise self.error
+        if conversation_id == MISSING_ID:
+            raise LookupError("Conversation not found.")
+        user_message = self._message(conversation_id=conversation_id, role="user", content=content)
+        assistant_message = self._message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content="Grounded answer [1].",
+            model_name="gemini-flash-lite-latest",
+        )
+        chunk_id = uuid4()
+        document_id = uuid4()
+        return ConversationMessageResponse(
+            conversation=self._conversation(id=conversation_id, messages=[user_message, assistant_message]),
+            user_message=user_message,
+            assistant_message=assistant_message,
+            citations=[
+                AnswerCitation(
+                    chunk_id=chunk_id,
+                    document_id=document_id,
+                    filename="policy.pdf",
+                    page_number=1,
+                    chunk_index=0,
+                    rank=1,
+                )
+            ],
+            source_chunks=[
+                RetrievalResult(
+                    chunk_id=chunk_id,
+                    document_id=document_id,
+                    filename="policy.pdf",
+                    rank=1,
+                    similarity_score=0.9,
+                    content="Policy evidence.",
+                    page_number=1,
+                    chunk_index=0,
+                    metadata={"page_number": 1},
+                )
+            ],
+        )
+
+    async def stream_message(self, *, conversation_id, content, limit):  # noqa: ANN001, ANN201
+        user_message = self._message(conversation_id=conversation_id, role="user", content=content)
+        assistant_message = self._message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content="Grounded answer [1].",
+            model_name="gemini-flash-lite-latest",
+        )
+        yield {
+            "event": "message_start",
+            "data": {
+                "conversation_id": str(conversation_id),
+                "user_message": user_message.model_dump(mode="json"),
+            },
+        }
+        yield {"event": "token", "data": {"content": "Grounded answer [1]."}}
+        yield {"event": "sources", "data": {"citations": [], "source_chunks": []}}
+        yield {
+            "event": "message_done",
+            "data": {
+                "conversation": self._conversation(
+                    id=conversation_id,
+                    messages=[user_message, assistant_message],
+                ).model_dump(mode="json"),
+                "assistant_message": assistant_message.model_dump(mode="json"),
+            },
+        }
+
+    def _conversation(self, *, id=None, knowledge_base_id=None, title="New chat", messages=None):  # noqa: A002, ANN001, ANN201
+        return ConversationRead(
+            id=id or self.conversation_id,
+            user_id=None,
+            knowledge_base_id=knowledge_base_id or self.knowledge_base_id,
+            title=title,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+            messages=messages or [],
+        )
+
+    def _message(self, *, conversation_id, role, content, model_name=None):  # noqa: ANN001, ANN201
+        return MessageRead(
+            id=uuid4(),
+            conversation_id=conversation_id,
+            role=role,
+            content=content,
+            model_name=model_name,
+            created_at=datetime.now(timezone.utc),
         )
 
 
@@ -549,3 +671,127 @@ def test_missing_document_returns_404() -> None:
 
     app.dependency_overrides.clear()
     assert response.status_code == 404
+
+
+def test_create_conversation_route() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+    knowledge_base_id = uuid4()
+
+    response = client.post(
+        "/api/v1/conversations",
+        json={"knowledge_base_id": str(knowledge_base_id), "title": "Policy chat"},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 201
+    assert response.json()["knowledge_base_id"] == str(knowledge_base_id)
+    assert response.json()["title"] == "Policy chat"
+
+
+def test_list_conversations_route() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+
+    response = client.get("/api/v1/conversations")
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json()[0]["title"] == "New chat"
+
+
+def test_get_conversation_route() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+    conversation_id = uuid4()
+
+    response = client.get(f"/api/v1/conversations/{conversation_id}")
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json()["id"] == str(conversation_id)
+
+
+def test_delete_conversation_route() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+
+    response = client.delete(f"/api/v1/conversations/{uuid4()}")
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 204
+    assert response.content == b""
+
+
+def test_delete_missing_conversation_returns_404() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+
+    response = client.delete(f"/api/v1/conversations/{MISSING_ID}")
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 404
+
+
+def test_create_conversation_message_route() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+    conversation_id = uuid4()
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content": "What changed?", "limit": 5},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    body = response.json()
+    assert body["user_message"]["content"] == "What changed?"
+    assert body["assistant_message"]["content"].endswith("[1].")
+    assert body["citations"][0]["filename"] == "policy.pdf"
+
+
+def test_create_conversation_message_sse_route() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/conversations/{uuid4()}/messages",
+        headers={"Accept": "text/event-stream"},
+        json={"content": "What changed?", "limit": 5, "stream": True},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: message_start" in response.text
+    assert "event: token" in response.text
+    assert "event: message_done" in response.text
+
+
+def test_create_conversation_missing_knowledge_base_returns_404() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/conversations",
+        json={"knowledge_base_id": str(MISSING_ID), "title": "Policy chat"},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 404
+
+
+def test_create_conversation_message_provider_error_returns_502() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService(
+        error=ChatModelError("Gemini API key is not configured.")
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/conversations/{uuid4()}/messages",
+        json={"content": "What changed?", "limit": 5},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 502

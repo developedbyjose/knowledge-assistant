@@ -101,10 +101,13 @@ def test_answer_builds_grounded_prompt_and_maps_citations() -> None:
     assert result.source_chunks == chunks
 
     prompt = chat_model.calls[0]["user_prompt"]
+    system_prompt = chat_model.calls[0]["system_prompt"]
+    assert "Do not use outside knowledge" in system_prompt
     assert "Question:\nWhat does the policy say?" in prompt
     assert "[1] filename=policy.pdf" in prompt
     assert f"chunk_id={chunks[0].chunk_id}" in prompt
     assert "[2] filename=ops.pdf" in prompt
+    assert "similarity_score=0.9000" in prompt
 
 
 def test_answer_uses_top_chunk_when_model_omits_citation_markers() -> None:
@@ -120,10 +123,41 @@ def test_answer_uses_top_chunk_when_model_omits_citation_markers() -> None:
     assert result.citations[0].chunk_id == chunks[0].chunk_id
 
 
+def test_answer_allows_calibrated_resume_similarity_scores() -> None:
+    resume_score_chunk = _result(rank=1).model_copy(update={"similarity_score": 0.13})
+    chat_model = FakeChatModel("Jose is located in Antipolo City, Philippines [1].")
+    service = AnswerService(
+        retrieval_service=FakeRetrievalService([resume_score_chunk]),  # type: ignore[arg-type]
+        chat_model=chat_model,
+    )
+
+    result = asyncio.run(service.answer(knowledge_base_id=uuid4(), question="Where is Jose located?", limit=5))
+
+    assert result.answer == "Jose is located in Antipolo City, Philippines [1]."
+    assert result.citations[0].chunk_id == resume_score_chunk.chunk_id
+    assert len(chat_model.calls) == 1
+
+
 def test_answer_returns_no_evidence_without_calling_model() -> None:
     chat_model = FakeChatModel()
     service = AnswerService(
         retrieval_service=FakeRetrievalService([]),  # type: ignore[arg-type]
+        chat_model=chat_model,
+    )
+
+    result = asyncio.run(service.answer(knowledge_base_id=uuid4(), question="What changed?", limit=5))
+
+    assert result.answer == NO_EVIDENCE_ANSWER
+    assert result.citations == []
+    assert result.source_chunks == []
+    assert chat_model.calls == []
+
+
+def test_answer_returns_no_evidence_for_low_similarity_without_calling_model() -> None:
+    low_score_chunk = _result(rank=1).model_copy(update={"similarity_score": 0.01})
+    chat_model = FakeChatModel()
+    service = AnswerService(
+        retrieval_service=FakeRetrievalService([low_score_chunk]),  # type: ignore[arg-type]
         chat_model=chat_model,
     )
 

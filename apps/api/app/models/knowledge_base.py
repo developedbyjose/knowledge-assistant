@@ -39,3 +39,8 @@ class KnowledgeBase(Base):
         back_populates="knowledge_base",
         cascade="all, delete-orphan",
     )
+    conversations = relationship(
+        "Conversation",
+        back_populates="knowledge_base",
+        cascade="all, delete-orphan",
+    )

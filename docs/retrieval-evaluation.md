@@ -19,9 +19,11 @@ generation:
    `POST /api/v1/knowledge-bases/{id}/query-embedding`.
 10. Inspect the returned chunks in the Retrieval Lab UI.
 
-LLM answer generation is layered on this retrieval flow, so representative PDFs
-and questions should continue to pass retrieval checks before evaluating answer
-quality.
+LLM answer generation and chat are layered on this retrieval flow, so
+representative PDFs and questions should continue to pass retrieval checks
+before evaluating answer quality. Grounded generation skips the chat model when
+retrieval returns no chunks or when every retrieved chunk falls below
+`RETRIEVAL_MIN_SIMILARITY_SCORE`.
 
 ## First Baseline
 

@@ -3,15 +3,17 @@ from __future__ import annotations
 import re
 from uuid import UUID
 
+from app.core.config import settings
+from app.rag.generation.prompts import (
+    NO_EVIDENCE_ANSWER,
+    build_grounded_system_prompt,
+    build_grounded_user_prompt,
+)
 from app.rag.providers.chat import ChatModel
 from app.schemas.retrieval import AnswerCitation, CitedAnswer, RetrievalResult
 from app.services.retrieval_service import RetrievalService
 
 SOURCE_REFERENCE_PATTERN = re.compile(r"\[(?:source:)?\s*(\d+)\]", re.IGNORECASE)
-
-NO_EVIDENCE_ANSWER = (
-    "I could not find enough relevant evidence in this knowledge base to answer the question."
-)
 
 
 class AnswerService:
@@ -36,7 +38,7 @@ class AnswerService:
             question=question,
             limit=limit,
         )
-        source_chunks = retrieval_results.results
+        source_chunks = self._usable_chunks(retrieval_results.results)
         if not source_chunks:
             return CitedAnswer(
                 question=question,
@@ -46,8 +48,8 @@ class AnswerService:
             )
 
         answer_text = await self.chat_model.generate(
-            system_prompt=self._build_system_prompt(),
-            user_prompt=self._build_user_prompt(question=question, source_chunks=source_chunks),
+            system_prompt=build_grounded_system_prompt(),
+            user_prompt=build_grounded_user_prompt(question=question, source_chunks=source_chunks),
         )
 
         return CitedAnswer(
@@ -57,28 +59,12 @@ class AnswerService:
             source_chunks=source_chunks,
         )
 
-    def _build_system_prompt(self) -> str:
-        return (
-            "You answer questions for a knowledge assistant using only the provided sources. "
-            "If the sources do not contain the answer, say you do not have enough evidence. "
-            "Cite every factual claim with bracketed source numbers like [1]."
-        )
-
-    def _build_user_prompt(
-        self,
-        *,
-        question: str,
-        source_chunks: list[RetrievalResult],
-    ) -> str:
-        sources = "\n\n".join(
-            (
-                f"[{index}] filename={chunk.filename}; document_id={chunk.document_id}; "
-                f"chunk_id={chunk.chunk_id}; page={chunk.page_number}; "
-                f"chunk_index={chunk.chunk_index}; rank={chunk.rank}\n{chunk.content}"
-            )
-            for index, chunk in enumerate(source_chunks, start=1)
-        )
-        return f"Question:\n{question}\n\nSources:\n{sources}"
+    def _usable_chunks(self, source_chunks: list[RetrievalResult]) -> list[RetrievalResult]:
+        if not source_chunks:
+            return []
+        if max(chunk.similarity_score for chunk in source_chunks) < settings.retrieval_min_similarity_score:
+            return []
+        return source_chunks
 
     def _citations_from_answer(
         self,

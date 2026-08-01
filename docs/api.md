@@ -53,11 +53,32 @@ query embedding dimension does not match the configured vector size.
 - The response includes `question`, `answer`, `citations`, and `source_chunks`.
   Each citation points back to a retrieved chunk with chunk/document IDs,
   filename, page number, chunk index, and retrieval rank.
-- When retrieval returns no chunks, the API returns a graceful no-evidence
+- When retrieval returns no chunks, or all retrieved chunks are below
+  `RETRIEVAL_MIN_SIMILARITY_SCORE`, the API returns a graceful no-evidence
   answer without calling the chat model.
 
 Answer generation currently uses `LLM_PROVIDER=gemini` with
-`LLM_MODEL=gemini-2.5-flash-lite`. Missing or failed chat-provider calls return
-`502`.
+`LLM_MODEL=gemini-flash-lite-latest`. Missing, unavailable, quota-limited, or
+failed chat-provider calls return `502`.
+
+## Conversations
+
+- `POST /api/v1/conversations` accepts `knowledge_base_id` and optional `title`,
+  creates a chat thread, and returns it with an empty `messages` list.
+- `GET /api/v1/conversations` lists chat threads with ordered messages.
+- `GET /api/v1/conversations/{id}` returns one chat thread with ordered
+  messages.
+- `DELETE /api/v1/conversations/{id}` deletes a chat thread and its messages.
+  Successful deletes return `204`.
+- `POST /api/v1/conversations/{id}/messages` accepts
+  `{ "content": "...", "limit": 5, "stream": false }`, persists the user
+  message, retrieves grounded context from the conversation knowledge base,
+  persists the assistant response, and returns citations plus source chunks.
+- The same message endpoint streams with Server-Sent Events when `stream` is
+  true or the request `Accept` header includes `text/event-stream`.
+
+Streaming events are `message_start`, `token`, `sources`, `message_done`, and
+`error`. Route handlers only format HTTP/SSE responses; retrieval, prompt
+assembly, generation, and persistence stay in the service layer.
 
 Missing knowledge bases or documents return `404`.

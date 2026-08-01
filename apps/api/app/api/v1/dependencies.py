@@ -10,6 +10,7 @@ from app.rag.providers.chat import ChatModel, ChatModelError
 from app.rag.providers.factory import create_chat_model, create_embedding_provider
 from app.rag.providers.embedding import EmbeddingProvider
 from app.services.answer_service import AnswerService
+from app.services.conversation_service import ConversationService
 from app.services.document_service import DocumentService
 from app.services.knowledge_base_service import KnowledgeBaseService
 from app.services.retrieval_service import RetrievalService
@@ -56,3 +57,15 @@ def get_answer_service(
     chat_model: Annotated[ChatModel, Depends(get_chat_model)],
 ) -> AnswerService:
     return AnswerService(retrieval_service=retrieval_service, chat_model=chat_model)
+
+
+def get_conversation_service(
+    session: SessionDep,
+    retrieval_service: Annotated[RetrievalService, Depends(get_retrieval_service)],
+    chat_model: Annotated[ChatModel, Depends(get_chat_model)],
+) -> ConversationService:
+    return ConversationService(
+        session=session,
+        retrieval_service=retrieval_service,
+        chat_model=chat_model,
+    )
