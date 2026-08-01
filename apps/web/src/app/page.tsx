@@ -1,28 +1,14 @@
+"use client"
+
+import { FormEvent, useEffect, useMemo, useState } from "react"
 import {
-  ActivityIcon,
-  BellIcon,
   BookOpenIcon,
   CheckCircle2Icon,
-  ChevronDownIcon,
-  CircleHelpIcon,
-  ClockIcon,
-  CopyIcon,
   DatabaseIcon,
   FileTextIcon,
-  FolderOpenIcon,
-  MessageSquareIcon,
-  MoreHorizontalIcon,
-  PanelLeftIcon,
-  PlusIcon,
+  Loader2Icon,
   SearchIcon,
-  SettingsIcon,
-  ShieldCheckIcon,
-  SlidersHorizontalIcon,
-  SparklesIcon,
-  ThumbsDownIcon,
-  ThumbsUpIcon,
   UploadIcon,
-  UserCircleIcon,
 } from "lucide-react"
 
 import { StatusBadge } from "@/components/common/status-badge"
@@ -39,422 +25,390 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
+  KnowledgeBase,
+  RetrievalResult,
+  UploadedDocument,
+  createKnowledgeBase,
+  listKnowledgeBases,
+  retrieveChunks,
+  uploadPdf,
+} from "@/lib/api"
 
-const navItems = [
-  { label: "New chat", icon: PlusIcon, active: false },
-  { label: "Chat", icon: MessageSquareIcon, active: true },
-  { label: "Documents", icon: FileTextIcon, active: false },
-  { label: "Knowledge", icon: DatabaseIcon, active: false },
-  { label: "Activity", icon: ActivityIcon, active: false },
-  { label: "Settings", icon: SettingsIcon, active: false },
-]
-
-const metrics = [
-  { label: "Total documents", value: "1,284", detail: "Across 6 knowledge bases" },
-  { label: "Ready documents", value: "1,221", detail: "95% available for retrieval" },
-  { label: "Processing", value: "18", detail: "Queued or indexing now" },
-  { label: "Recent conversations", value: "42", detail: "Last 7 days" },
-]
-
-const documents = [
-  {
-    name: "Employee Handbook 2026.pdf",
-    type: "PDF",
-    knowledgeBase: "People Operations",
-    size: "8.4 MB",
-    status: "ready" as const,
-    uploaded: "Today, 9:42 AM",
-  },
-  {
-    name: "Security review checklist.docx",
-    type: "DOCX",
-    knowledgeBase: "Security",
-    size: "312 KB",
-    status: "processing" as const,
-    uploaded: "Today, 8:15 AM",
-  },
-  {
-    name: "Q3 onboarding notes.md",
-    type: "Markdown",
-    knowledgeBase: "Product Enablement",
-    size: "74 KB",
-    status: "queued" as const,
-    uploaded: "Yesterday",
-  },
-  {
-    name: "Vendor risk matrix.xlsx",
-    type: "Sheet",
-    knowledgeBase: "Procurement",
-    size: "1.1 MB",
-    status: "failed" as const,
-    uploaded: "Jul 30, 2026",
-  },
-]
-
-const knowledgeBases = [
-  {
-    name: "People Operations",
-    description: "Policies, benefits, onboarding, and internal processes.",
-    documents: 318,
-    updated: "12 min ago",
-    status: "active" as const,
-  },
-  {
-    name: "Security",
-    description: "Review checklists, access standards, and incident playbooks.",
-    documents: 146,
-    updated: "1 hr ago",
-    status: "active" as const,
-  },
-  {
-    name: "Product Enablement",
-    description: "Release notes, positioning docs, and customer-facing guides.",
-    documents: 227,
-    updated: "Yesterday",
-    status: "active" as const,
-  },
-]
+type BusyState = "idle" | "loading" | "creating" | "uploading" | "retrieving"
 
 export default function Home() {
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([])
+  const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState("")
+  const [knowledgeBaseName, setKnowledgeBaseName] = useState("Retrieval Lab")
+  const [document, setDocument] = useState<UploadedDocument | null>(null)
+  const [file, setFile] = useState<File | null>(null)
+  const [question, setQuestion] = useState("")
+  const [results, setResults] = useState<RetrievalResult[]>([])
+  const [hasRetrieved, setHasRetrieved] = useState(false)
+  const [busyState, setBusyState] = useState<BusyState>("loading")
+  const [error, setError] = useState<string | null>(null)
+
+  const selectedKnowledgeBase = useMemo(
+    () => knowledgeBases.find((knowledgeBase) => knowledgeBase.id === selectedKnowledgeBaseId),
+    [knowledgeBases, selectedKnowledgeBaseId]
+  )
+
+  useEffect(() => {
+    let active = true
+
+    async function loadKnowledgeBases() {
+      try {
+        setBusyState("loading")
+        const existing = await listKnowledgeBases()
+        if (!active) {
+          return
+        }
+
+        if (existing.length > 0) {
+          setKnowledgeBases(existing)
+          setSelectedKnowledgeBaseId(
+            existing.find((knowledgeBase) => knowledgeBase.chunk_count > 0)?.id ?? existing[0].id
+          )
+          return
+        }
+
+        const created = await createKnowledgeBase({
+          name: "Retrieval Lab",
+          description: "Default workspace for validating PDF chunk retrieval.",
+        })
+        if (!active) {
+          return
+        }
+        setKnowledgeBases([created])
+        setSelectedKnowledgeBaseId(created.id)
+      } catch (caught) {
+        setError(errorMessage(caught))
+      } finally {
+        if (active) {
+          setBusyState("idle")
+        }
+      }
+    }
+
+    loadKnowledgeBases()
+
+    return () => {
+      active = false
+    }
+  }, [])
+
+  async function handleCreateKnowledgeBase(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!knowledgeBaseName.trim()) {
+      setError("Enter a knowledge base name.")
+      return
+    }
+
+    try {
+      setBusyState("creating")
+      setError(null)
+      const created = await createKnowledgeBase({
+        name: knowledgeBaseName.trim(),
+        description: "PDF retrieval validation workspace.",
+      })
+      setKnowledgeBases((current) => [created, ...current])
+      setSelectedKnowledgeBaseId(created.id)
+      setKnowledgeBaseName("")
+      setDocument(null)
+      setResults([])
+      setHasRetrieved(false)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setBusyState("idle")
+    }
+  }
+
+  async function handleUpload(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!selectedKnowledgeBaseId || !file) {
+      setError("Choose a knowledge base and a PDF file.")
+      return
+    }
+
+    try {
+      setBusyState("uploading")
+      setError(null)
+      setResults([])
+      setHasRetrieved(false)
+      const uploaded = await uploadPdf(selectedKnowledgeBaseId, file)
+      setDocument(uploaded)
+      const refreshed = await listKnowledgeBases()
+      setKnowledgeBases(refreshed)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setBusyState("idle")
+    }
+  }
+
+  async function handleRetrieve(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!selectedKnowledgeBaseId || !question.trim()) {
+      setError("Choose a knowledge base and enter a question.")
+      return
+    }
+
+    try {
+      setBusyState("retrieving")
+      setError(null)
+      const retrieved = await retrieveChunks(selectedKnowledgeBaseId, question.trim(), 5)
+      setResults(retrieved.results)
+      setHasRetrieved(true)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setBusyState("idle")
+    }
+  }
+
+  const isBusy = busyState !== "idle"
+
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <div className="flex min-h-screen">
-        <aside className="hidden w-64 shrink-0 border-r bg-card lg:block">
-          <div className="sticky top-0 flex h-screen flex-col">
-            <div className="flex h-14 items-center gap-2 border-b px-4">
-              <div className="flex size-8 items-center justify-center rounded-md border bg-primary text-primary-foreground">
-                <BookOpenIcon className="size-4" aria-hidden="true" />
-              </div>
-              <div>
-                <p className="text-sm font-semibold">Knowledge Assistant</p>
-                <p className="text-xs text-muted-foreground">Internal workspace</p>
-              </div>
-            </div>
+    <main className="min-h-screen bg-background text-foreground">
+      <PageContainer size="wide">
+        <PageHeader
+          title="Retrieval Lab"
+          description="Upload one PDF, index its chunks, and verify the top five retrieval matches before connecting an LLM."
+          actions={
+            <Badge variant="outline" className="hidden sm:inline-flex">
+              Retrieval only
+            </Badge>
+          }
+        />
 
-            <nav className="flex-1 space-y-1 px-3 py-4" aria-label="Primary">
-              {navItems.map((item) => (
-                <a
-                  key={item.label}
-                  href="#"
-                  className={
-                    item.active
-                      ? "flex h-9 items-center gap-2 rounded-md bg-primary/10 px-3 text-sm font-medium text-primary"
-                      : "flex h-9 items-center gap-2 rounded-md px-3 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-                  }
-                >
-                  <item.icon className="size-4" aria-hidden="true" />
-                  {item.label}
-                </a>
-              ))}
-            </nav>
-
-            <div className="border-t p-4">
-              <div className="rounded-lg border bg-background p-3">
-                <div className="flex items-center gap-2">
-                  <ShieldCheckIcon className="size-4 text-primary" aria-hidden="true" />
-                  <p className="text-sm font-medium">Citations required</p>
-                </div>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  Answers show source documents before they can be shared.
-                </p>
-              </div>
-            </div>
+        {error ? (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+            {error}
           </div>
-        </aside>
+        ) : null}
 
-        <div className="flex min-w-0 flex-1 flex-col">
-          <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b bg-background/95 px-4 sm:px-6 lg:px-8">
-            <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open navigation">
-              <PanelLeftIcon aria-hidden="true" />
-            </Button>
-            <button className="hidden h-8 items-center gap-2 rounded-md border px-2.5 text-sm font-medium lg:flex">
-              Acme Operations
-              <ChevronDownIcon className="size-4 text-muted-foreground" aria-hidden="true" />
-            </button>
-            <div className="relative max-w-md flex-1">
-              <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input aria-label="Global search" className="pl-8" placeholder="Search documents, answers, or conversations" />
-            </div>
-            <Button variant="ghost" size="icon" aria-label="Help">
-              <CircleHelpIcon aria-hidden="true" />
-            </Button>
-            <Button variant="ghost" size="icon" aria-label="Notifications">
-              <BellIcon aria-hidden="true" />
-            </Button>
-            <Button variant="ghost" size="icon" aria-label="Profile">
-              <UserCircleIcon aria-hidden="true" />
-            </Button>
-          </header>
-
-          <PageContainer size="wide">
-            <PageHeader
-              title="Knowledge workspace"
-              description="Ask grounded questions, monitor document readiness, and manage the knowledge bases that power retrieval."
-              actions={
-                <>
-                  <Button variant="outline">
-                    <UploadIcon aria-hidden="true" />
-                    Upload
-                  </Button>
-                  <Button>
-                    <PlusIcon aria-hidden="true" />
-                    New chat
-                  </Button>
-                </>
-              }
-            />
-
-            <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label="Operational summary">
-              {metrics.map((metric) => (
-                <Card key={metric.label} className="rounded-lg shadow-none">
-                  <CardHeader className="pb-0">
-                    <CardTitle className="text-sm">{metric.label}</CardTitle>
-                    <CardDescription>{metric.detail}</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <p className="text-2xl font-semibold tracking-tight">{metric.value}</p>
-                  </CardContent>
-                </Card>
-              ))}
-            </section>
-
-            <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
-              <div className="space-y-6">
-                <Card className="rounded-lg shadow-none">
-                  <CardHeader className="border-b pb-4">
-                    <CardTitle>Recent documents</CardTitle>
-                    <CardDescription>Search, filter, and review processing status.</CardDescription>
-                    <CardAction>
-                      <Button variant="outline" size="sm">
-                        <SlidersHorizontalIcon aria-hidden="true" />
-                        Status
-                      </Button>
-                    </CardAction>
-                  </CardHeader>
-                  <CardContent className="pt-4">
-                    <div className="mb-4 flex flex-col gap-3 sm:flex-row">
-                      <div className="relative flex-1">
-                        <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                        <Input className="pl-8" aria-label="Search documents" placeholder="Search documents" />
-                      </div>
-                      <Button variant="outline">
-                        <UploadIcon aria-hidden="true" />
-                        Upload files
-                      </Button>
-                    </div>
-
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Name</TableHead>
-                          <TableHead>Type</TableHead>
-                          <TableHead>Knowledge base</TableHead>
-                          <TableHead>Size</TableHead>
-                          <TableHead>Status</TableHead>
-                          <TableHead>Uploaded</TableHead>
-                          <TableHead className="w-10">
-                            <span className="sr-only">Actions</span>
-                          </TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {documents.map((document) => (
-                          <TableRow key={document.name}>
-                            <TableCell className="font-medium">{document.name}</TableCell>
-                            <TableCell>{document.type}</TableCell>
-                            <TableCell>{document.knowledgeBase}</TableCell>
-                            <TableCell>{document.size}</TableCell>
-                            <TableCell>
-                              <StatusBadge status={document.status}>{document.status}</StatusBadge>
-                            </TableCell>
-                            <TableCell className="text-muted-foreground">{document.uploaded}</TableCell>
-                            <TableCell>
-                              <Button variant="ghost" size="icon-sm" aria-label={`Open actions for ${document.name}`}>
-                                <MoreHorizontalIcon aria-hidden="true" />
-                              </Button>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </CardContent>
-                </Card>
-
-                <div className="grid gap-4 lg:grid-cols-3">
-                  {knowledgeBases.map((knowledgeBase) => (
-                    <Card key={knowledgeBase.name} className="rounded-lg shadow-none">
-                      <CardHeader>
-                        <CardTitle>{knowledgeBase.name}</CardTitle>
-                        <CardDescription>{knowledgeBase.description}</CardDescription>
-                        <CardAction>
-                          <Button variant="ghost" size="icon-sm" aria-label={`More actions for ${knowledgeBase.name}`}>
-                            <MoreHorizontalIcon aria-hidden="true" />
-                          </Button>
-                        </CardAction>
-                      </CardHeader>
-                      <CardContent className="space-y-4">
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="text-muted-foreground">Documents</span>
-                          <span className="font-medium">{knowledgeBase.documents}</span>
-                        </div>
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="text-muted-foreground">Last updated</span>
-                          <span className="font-medium">{knowledgeBase.updated}</span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <StatusBadge status={knowledgeBase.status}>Active</StatusBadge>
-                          <Button variant="outline" size="sm">
-                            <FolderOpenIcon aria-hidden="true" />
-                            Open
-                          </Button>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))}
+        <section className="grid gap-6 xl:grid-cols-[380px_minmax(0,1fr)]">
+          <div className="space-y-6">
+            <Card className="rounded-lg shadow-none">
+              <CardHeader className="border-b pb-4">
+                <CardTitle>Knowledge base</CardTitle>
+                <CardDescription>Select the retrieval collection for this run.</CardDescription>
+                <CardAction>
+                  <DatabaseIcon className="size-4 text-muted-foreground" aria-hidden="true" />
+                </CardAction>
+              </CardHeader>
+              <CardContent className="space-y-4 pt-4">
+                <div className="space-y-2">
+                  <label htmlFor="knowledge-base" className="text-sm font-medium">
+                    Active collection
+                  </label>
+                  <select
+                    id="knowledge-base"
+                    value={selectedKnowledgeBaseId}
+                    onChange={(event) => {
+                      setSelectedKnowledgeBaseId(event.target.value)
+                      setDocument(null)
+                      setResults([])
+                      setHasRetrieved(false)
+                    }}
+                    className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                    disabled={busyState === "loading"}
+                  >
+                    {knowledgeBases.map((knowledgeBase) => (
+                      <option key={knowledgeBase.id} value={knowledgeBase.id}>
+                        {knowledgeBase.name} ({knowledgeBase.chunk_count} chunks)
+                      </option>
+                    ))}
+                  </select>
                 </div>
-              </div>
 
-              <aside className="space-y-6">
-                <Card className="rounded-lg shadow-none">
-                  <CardHeader className="border-b pb-4">
-                    <CardTitle>Current answer</CardTitle>
-                    <CardDescription>Document-style response with feedback controls.</CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4 pt-4">
-                    <div className="rounded-lg border bg-muted/30 p-4">
-                      <div className="mb-3 flex items-center gap-2">
-                        <SparklesIcon className="size-4 text-primary" aria-hidden="true" />
-                        <p className="text-sm font-medium">Assistant</p>
-                        <Badge variant="outline" className="ml-auto">4 sources</Badge>
-                      </div>
-                      <p className="text-sm leading-6">
-                        The latest onboarding guidance requires completing identity verification,
-                        security awareness training, and manager-approved system access before the
-                        employee&apos;s first production login.
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <Button variant="outline" size="sm"><CopyIcon aria-hidden="true" />Copy</Button>
-                      <Button variant="outline" size="sm"><ThumbsUpIcon aria-hidden="true" />Helpful</Button>
-                      <Button variant="outline" size="sm"><ThumbsDownIcon aria-hidden="true" />Not helpful</Button>
-                    </div>
-                  </CardContent>
-                </Card>
+                <form className="space-y-3" onSubmit={handleCreateKnowledgeBase}>
+                  <label htmlFor="new-knowledge-base" className="text-sm font-medium">
+                    Create another collection
+                  </label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="new-knowledge-base"
+                      value={knowledgeBaseName}
+                      onChange={(event) => setKnowledgeBaseName(event.target.value)}
+                      placeholder="Knowledge base name"
+                    />
+                    <Button type="submit" disabled={isBusy}>
+                      {busyState === "creating" ? (
+                        <Loader2Icon className="animate-spin" aria-hidden="true" />
+                      ) : null}
+                      Create
+                    </Button>
+                  </div>
+                </form>
 
-                <Card className="rounded-lg shadow-none">
-                  <CardHeader>
-                    <CardTitle>Sources</CardTitle>
-                    <CardDescription>Cited evidence for the selected answer.</CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    {["Employee Handbook 2026.pdf", "Security review checklist.docx", "Manager onboarding playbook.pdf"].map((source, index) => (
-                      <div key={source} className="rounded-lg border p-3">
-                        <div className="flex items-start gap-2">
-                          <FileTextIcon className="mt-0.5 size-4 text-muted-foreground" aria-hidden="true" />
-                          <div>
-                            <p className="text-sm font-medium">{source}</p>
-                            <p className="text-xs text-muted-foreground">Page {index + 3} · People Operations</p>
-                          </div>
-                        </div>
-                        <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                          Relevant excerpt matched identity verification and access prerequisites.
+                {selectedKnowledgeBase ? (
+                  <div className="rounded-lg border bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">
+                    <p className="font-medium text-foreground">{selectedKnowledgeBase.name}</p>
+                    <p>{selectedKnowledgeBase.embedding_model}</p>
+                    <p>
+                      {selectedKnowledgeBase.document_count} documents, {selectedKnowledgeBase.chunk_count} chunks
+                    </p>
+                  </div>
+                ) : null}
+              </CardContent>
+            </Card>
+
+            <Card className="rounded-lg shadow-none">
+              <CardHeader className="border-b pb-4">
+                <CardTitle>PDF upload</CardTitle>
+                <CardDescription>Processing runs synchronously for this first slice.</CardDescription>
+                <CardAction>
+                  <UploadIcon className="size-4 text-muted-foreground" aria-hidden="true" />
+                </CardAction>
+              </CardHeader>
+              <CardContent className="space-y-4 pt-4">
+                <form className="space-y-3" onSubmit={handleUpload}>
+                  <label htmlFor="pdf-file" className="text-sm font-medium">
+                    PDF file
+                  </label>
+                  <Input
+                    id="pdf-file"
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+                  />
+                  <Button type="submit" className="w-full" disabled={isBusy || !file}>
+                    {busyState === "uploading" ? (
+                      <Loader2Icon className="animate-spin" aria-hidden="true" />
+                    ) : (
+                      <UploadIcon aria-hidden="true" />
+                    )}
+                    Upload and index
+                  </Button>
+                </form>
+
+                {document ? (
+                  <div className="space-y-3 rounded-lg border p-3">
+                    <div className="flex items-start gap-2">
+                      <FileTextIcon className="mt-0.5 size-4 text-muted-foreground" aria-hidden="true" />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{document.original_filename}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {document.chunk_count} chunks
+                          {document.page_count ? ` across ${document.page_count} pages` : ""}
                         </p>
                       </div>
-                    ))}
-                  </CardContent>
-                </Card>
-
-                <Card className="rounded-lg shadow-none">
-                  <CardHeader>
-                    <CardTitle>Retrieval settings</CardTitle>
-                    <CardDescription>Visible controls for review and tuning.</CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <SettingRow label="Results" value="8" />
-                    <SettingRow label="Similarity threshold" value="0.78" />
-                    <SettingRow label="Reranking" value="Enabled" />
-                    <SettingRow label="Chunk size" value="900 tokens" />
-                  </CardContent>
-                </Card>
-              </aside>
-            </section>
-
-            <section className="grid gap-4 lg:grid-cols-3">
-              <Card className="rounded-lg shadow-none lg:col-span-2">
-                <CardHeader>
-                  <CardTitle>Recent conversations</CardTitle>
-                  <CardDescription>Operational questions answered from indexed sources.</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {["What access is required for new engineers?", "Summarize vendor security exceptions", "Which policies changed this quarter?"].map((conversation) => (
-                    <div key={conversation} className="flex items-center gap-3 rounded-lg border p-3">
-                      <MessageSquareIcon className="size-4 text-muted-foreground" aria-hidden="true" />
-                      <p className="flex-1 text-sm font-medium">{conversation}</p>
-                      <ClockIcon className="size-4 text-muted-foreground" aria-hidden="true" />
-                      <span className="text-xs text-muted-foreground">Today</span>
+                      <StatusBadge status={document.status === "processed" ? "ready" : "failed"}>
+                        {document.status}
+                      </StatusBadge>
                     </div>
-                  ))}
-                </CardContent>
-              </Card>
-
-              <Card className="rounded-lg shadow-none">
-                <CardHeader>
-                  <CardTitle>Upload progress</CardTitle>
-                  <CardDescription>Processing state for recent files.</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <ProgressRow label="Parsing" value="Complete" percent="100%" />
-                  <ProgressRow label="Chunking" value="In progress" percent="68%" />
-                  <ProgressRow label="Embedding" value="Queued" percent="0%" />
-                  <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
-                    <CheckCircle2Icon className="size-4" aria-hidden="true" />
-                    12 documents are ready for chat.
+                    {document.error_message ? (
+                      <p className="text-xs leading-5 text-destructive">{document.error_message}</p>
+                    ) : (
+                      <div className="flex items-center gap-2 text-xs text-emerald-700">
+                        <CheckCircle2Icon className="size-4" aria-hidden="true" />
+                        Stored in pgvector and ready for retrieval.
+                      </div>
+                    )}
                   </div>
-                </CardContent>
-              </Card>
-            </section>
-          </PageContainer>
-        </div>
-      </div>
-    </div>
+                ) : (
+                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                    No indexed PDF yet.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          <section className="space-y-6">
+            <Card className="rounded-lg shadow-none">
+              <CardHeader className="border-b pb-4">
+                <CardTitle>Question</CardTitle>
+                <CardDescription>The response below is retrieved evidence, not an LLM answer.</CardDescription>
+                <CardAction>
+                  <SearchIcon className="size-4 text-muted-foreground" aria-hidden="true" />
+                </CardAction>
+              </CardHeader>
+              <CardContent className="space-y-4 pt-4">
+                <form className="space-y-3" onSubmit={handleRetrieve}>
+                  <label htmlFor="question" className="text-sm font-medium">
+                    Retrieval query
+                  </label>
+                  <Textarea
+                    id="question"
+                    value={question}
+                    onChange={(event) => setQuestion(event.target.value)}
+                    placeholder="Ask a question that should be answered by the uploaded PDF"
+                    rows={4}
+                  />
+                  <Button type="submit" disabled={isBusy || !question.trim()}>
+                    {busyState === "retrieving" ? (
+                      <Loader2Icon className="animate-spin" aria-hidden="true" />
+                    ) : (
+                      <SearchIcon aria-hidden="true" />
+                    )}
+                    Retrieve five chunks
+                  </Button>
+                </form>
+              </CardContent>
+            </Card>
+
+            <Card className="rounded-lg shadow-none">
+              <CardHeader className="border-b pb-4">
+                <CardTitle>Retrieved chunks</CardTitle>
+                <CardDescription>Top five pgvector matches ordered by cosine similarity.</CardDescription>
+                <CardAction>
+                  <Badge variant="outline">{results.length}/5</Badge>
+                </CardAction>
+              </CardHeader>
+              <CardContent className="space-y-3 pt-4">
+                {results.length === 0 ? (
+                  <div className="rounded-lg border border-dashed p-6 text-center">
+                    <BookOpenIcon className="mx-auto size-5 text-muted-foreground" aria-hidden="true" />
+                    <p className="mt-2 text-sm font-medium">
+                      {hasRetrieved ? "No chunks returned" : "No retrieved chunks yet"}
+                    </p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {hasRetrieved
+                        ? "This selected knowledge base has no indexed chunks yet. Upload a text-based PDF here, or choose a collection with chunks."
+                        : "Upload a text-based PDF, then submit a retrieval query."}
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    {results.map((result) => (
+                      <article key={result.chunk_id} className="rounded-lg border p-4">
+                        <div className="mb-3 flex flex-wrap items-center gap-2">
+                          <Badge variant="secondary">Rank {result.rank}</Badge>
+                          <span className="text-xs text-muted-foreground">
+                            Score {result.similarity_score.toFixed(3)}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            {result.filename}
+                            {result.page_number ? `, page ${result.page_number}` : ""}
+                          </span>
+                          <span className="ml-auto text-xs text-muted-foreground">
+                            Chunk {result.chunk_index}
+                          </span>
+                        </div>
+                        <p className="text-sm leading-6">{result.content}</p>
+                      </article>
+                    ))}
+                    {Array.from({ length: Math.max(0, 5 - results.length) }).map((_, index) => (
+                      <div key={`empty-${index}`} className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                        No additional match returned for slot {results.length + index + 1}.
+                      </div>
+                    ))}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </section>
+        </section>
+      </PageContainer>
+    </main>
   )
 }
 
-function SettingRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-4 rounded-lg border p-3 text-sm">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium">{value}</span>
-    </div>
-  )
-}
-
-function ProgressRow({
-  label,
-  value,
-  percent,
-}: {
-  label: string
-  value: string
-  percent: string
-}) {
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between gap-3 text-sm">
-        <span className="font-medium">{label}</span>
-        <span className="text-muted-foreground">{value}</span>
-      </div>
-      <div className="h-2 rounded-sm bg-muted">
-        <div className="h-2 rounded-sm bg-primary" style={{ width: percent }} />
-      </div>
-    </div>
-  )
+function errorMessage(caught: unknown) {
+  return caught instanceof Error ? caught.message : "Something went wrong."
 }

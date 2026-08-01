@@ -6,3 +6,8 @@ psycopg[binary]==3.2.9
 python-multipart==0.0.20
 sentence-transformers==5.0.0
 google-genai==1.27.0
+alembic==1.16.4
+pgvector==0.4.1
+pypdf==5.9.0
+pytest==8.4.1
+httpx==0.28.1
