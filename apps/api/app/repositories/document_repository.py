@@ -133,6 +133,7 @@ class DocumentRepository:
             select(DocumentChunk, Document, distance)
             .join(Document, Document.id == DocumentChunk.document_id)
             .where(Document.knowledge_base_id == knowledge_base_id)
+            .where(Document.status == "processed")
             .order_by(distance.asc())
             .limit(limit)
         )
@@ -150,6 +151,7 @@ class DocumentRepository:
                     content=chunk.content,
                     page_number=chunk.page_number,
                     chunk_index=chunk.chunk_index,
+                    metadata=chunk.chunk_metadata,
                 )
             )
         return results

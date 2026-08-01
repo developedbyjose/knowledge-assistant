@@ -11,7 +11,7 @@ from app.api.v1.dependencies import (
 from app.main import app
 from app.schemas.document import DocumentRead
 from app.schemas.knowledge_base import KnowledgeBaseRead
-from app.schemas.retrieval import DocumentUploadRead, RetrievalResults
+from app.schemas.retrieval import DocumentUploadRead, RetrievalResult, RetrievalResults
 
 MISSING_ID = UUID("00000000-0000-0000-0000-000000000404")
 PROCESSED_ID = UUID("00000000-0000-0000-0000-000000000101")
@@ -133,7 +133,25 @@ class FakeDocumentService:
 
 class FakeRetrievalService:
     def retrieve(self, *, knowledge_base_id, question, limit):  # noqa: ANN001, ANN201
-        return RetrievalResults(question=question, results=[])
+        if knowledge_base_id == MISSING_ID:
+            raise LookupError("Knowledge base not found.")
+
+        return RetrievalResults(
+            question=question,
+            results=[
+                RetrievalResult(
+                    chunk_id=uuid4(),
+                    document_id=uuid4(),
+                    filename="retrieval-baseline.pdf",
+                    rank=1,
+                    similarity_score=0.92,
+                    content="Query embeddings rank policy chunks above onboarding chunks.",
+                    page_number=1,
+                    chunk_index=0,
+                    metadata={"source": "pdf", "page_number": 1},
+                )
+            ],
+        )
 
 
 def test_rejects_non_pdf_upload() -> None:
@@ -218,7 +236,23 @@ def test_upload_missing_knowledge_base_returns_404() -> None:
     assert response.status_code == 404
 
 
-def test_query_before_chunks_returns_empty_results() -> None:
+def test_query_embedding_returns_ranked_chunks() -> None:
+    app.dependency_overrides[get_retrieval_service] = lambda: FakeRetrievalService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/query-embedding",
+        json={"question": "What is this about?", "limit": 5},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    body = response.json()
+    assert body["results"][0]["rank"] == 1
+    assert body["results"][0]["metadata"] == {"source": "pdf", "page_number": 1}
+
+
+def test_retrieval_query_alias_still_returns_chunks() -> None:
     app.dependency_overrides[get_retrieval_service] = lambda: FakeRetrievalService()
     client = TestClient(app)
 
@@ -229,7 +263,33 @@ def test_query_before_chunks_returns_empty_results() -> None:
 
     app.dependency_overrides.clear()
     assert response.status_code == 200
-    assert response.json()["results"] == []
+    assert response.json()["results"][0]["filename"] == "retrieval-baseline.pdf"
+
+
+def test_query_embedding_validates_payload() -> None:
+    app.dependency_overrides[get_retrieval_service] = lambda: FakeRetrievalService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/query-embedding",
+        json={"question": "", "limit": 21},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 422
+
+
+def test_query_embedding_missing_knowledge_base_returns_404() -> None:
+    app.dependency_overrides[get_retrieval_service] = lambda: FakeRetrievalService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{MISSING_ID}/query-embedding",
+        json={"question": "What is this about?", "limit": 5},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 404
 
 
 def test_create_knowledge_base_route() -> None:

@@ -36,6 +36,7 @@ export type RetrievalResult = {
   content: string
   page_number: number | null
   chunk_index: number
+  metadata: Record<string, unknown>
 }
 
 export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
@@ -109,7 +110,7 @@ export async function retrieveChunks(
   question: string,
   limit = 5
 ): Promise<{ question: string; results: RetrievalResult[] }> {
-  return apiFetch(`/knowledge-bases/${knowledgeBaseId}/retrieval-query`, {
+  return apiFetch(`/knowledge-bases/${knowledgeBaseId}/query-embedding`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ question, limit }),

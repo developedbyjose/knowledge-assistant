@@ -145,14 +145,10 @@ def reprocess_document(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
-@router.post(
-    "/knowledge-bases/{knowledge_base_id}/retrieval-query",
-    response_model=RetrievalResults,
-)
-def retrieve_chunks(
+def _retrieve_chunks(
     knowledge_base_id: UUID,
     payload: RetrievalQuery,
-    service: Annotated[RetrievalService, Depends(get_retrieval_service)],
+    service: RetrievalService,
 ) -> RetrievalResults:
     try:
         return service.retrieve(
@@ -162,3 +158,29 @@ def retrieve_chunks(
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post(
+    "/knowledge-bases/{knowledge_base_id}/query-embedding",
+    response_model=RetrievalResults,
+)
+def query_embedding(
+    knowledge_base_id: UUID,
+    payload: RetrievalQuery,
+    service: Annotated[RetrievalService, Depends(get_retrieval_service)],
+) -> RetrievalResults:
+    return _retrieve_chunks(knowledge_base_id, payload, service)
+
+
+@router.post(
+    "/knowledge-bases/{knowledge_base_id}/retrieval-query",
+    response_model=RetrievalResults,
+)
+def retrieve_chunks(
+    knowledge_base_id: UUID,
+    payload: RetrievalQuery,
+    service: Annotated[RetrievalService, Depends(get_retrieval_service)],
+) -> RetrievalResults:
+    return _retrieve_chunks(knowledge_base_id, payload, service)

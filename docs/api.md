@@ -32,8 +32,17 @@ endpoints are versioned under `/api/v1`.
 
 ## Retrieval
 
-- `POST /api/v1/knowledge-bases/{id}/retrieval-query` accepts
-  `{ "question": "...", "limit": 5 }` and returns the top matching chunks.
+- `POST /api/v1/knowledge-bases/{id}/query-embedding` accepts
+  `{ "question": "...", "limit": 5 }`, embeds the question with the configured
+  embedding provider, and returns the top matching chunks. Each result includes
+  rank, similarity score, source document IDs, filename, page number, chunk
+  index, content, and chunk metadata.
+- `POST /api/v1/knowledge-bases/{id}/retrieval-query` remains available as a
+  compatibility alias for the same behavior.
+
+Retrieval returns `400` if the selected knowledge base was indexed with a
+different embedding model than the current runtime configuration or if the
+query embedding dimension does not match the configured vector size.
 
 This milestone intentionally does not call Gemini or any other chat model.
 Missing knowledge bases or documents return `404`.

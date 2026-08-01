@@ -30,6 +30,7 @@ class RetrievalResult(BaseModel):
     content: str
     page_number: Optional[int]
     chunk_index: int
+    metadata: dict[str, object] = Field(default_factory=dict)
 
 
 class RetrievalResults(BaseModel):

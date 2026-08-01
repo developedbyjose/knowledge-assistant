@@ -1,0 +1,31 @@
+{
+  "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+  "chunk_size": 800,
+  "overlap": 150,
+  "documents": [
+    {
+      "filename": "retrieval-policy.pdf",
+      "expected_phrases": [
+        "Query embeddings rank policy chunks by cosine similarity.",
+        "Processed documents are eligible for vector search results."
+      ]
+    },
+    {
+      "filename": "onboarding-notes.pdf",
+      "expected_phrases": [
+        "Upload a PDF, wait for processed status, then ask a focused question.",
+        "Record the first baseline before connecting answer generation."
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "question": "How are query embeddings ranked?",
+      "expected_filename": "retrieval-policy.pdf"
+    },
+    {
+      "question": "What should analysts do before answer generation?",
+      "expected_filename": "onboarding-notes.pdf"
+    }
+  ]
+}
