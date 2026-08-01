@@ -45,6 +45,7 @@ class AnswerCitation(BaseModel):
     page_number: Optional[int]
     chunk_index: int
     rank: int
+    similarity_score: Optional[float] = None
 
 
 class CitedAnswer(BaseModel):

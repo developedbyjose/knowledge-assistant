@@ -40,9 +40,45 @@ class FakeConversationRepository:
             content=content,
             model_name=model_name,
             created_at=datetime.now(timezone.utc),
+            citations=[],
+            feedback=None,
         )
         conversation.messages.append(message)
         return message
+
+    def add_citations(self, *, message, citations, source_chunks):  # noqa: ANN001, ANN201
+        source_by_id = {chunk.chunk_id: chunk for chunk in source_chunks}
+        message.citations = [
+            SimpleNamespace(
+                chunk=SimpleNamespace(
+                    id=citation.chunk_id,
+                    document=SimpleNamespace(
+                        id=citation.document_id,
+                        original_filename=citation.filename,
+                    ),
+                    page_number=citation.page_number,
+                    chunk_index=citation.chunk_index,
+                    chunk_metadata=source_by_id[citation.chunk_id].metadata,
+                ),
+                rank=citation.rank,
+                similarity_score=source_by_id[citation.chunk_id].similarity_score,
+                quoted_text=source_by_id[citation.chunk_id].content,
+            )
+            for citation in citations
+        ]
+        return message.citations
+
+    def get_message(self, message_id: UUID):  # noqa: ANN201
+        return next((message for message in self.messages if message.id == message_id), None)
+
+    def record_feedback(self, *, message, rating):  # noqa: ANN001, ANN201
+        message.feedback = SimpleNamespace(
+            id=uuid4(),
+            message_id=message.id,
+            rating=rating,
+            created_at=datetime.now(timezone.utc),
+        )
+        return message.feedback
 
 
 class FakeRetrievalService:
@@ -121,6 +157,7 @@ def test_add_message_persists_user_and_assistant_messages() -> None:
     assert response.assistant_message.content == "Grounded answer [1]."
     assert response.citations[0].filename == "policy.pdf"
     assert response.source_chunks[0].content == "Policy evidence."
+    assert response.conversation.messages[-1].source_chunks[0].filename == "policy.pdf"
 
 
 def test_add_message_skips_model_when_context_is_insufficient() -> None:
@@ -162,3 +199,34 @@ def test_stream_message_emits_tokens_sources_and_done() -> None:
     ]
     assert session.commits == 1
     assert conversation.messages[-1].content == "Grounded answer [1]."
+
+
+def test_record_feedback_accepts_assistant_message() -> None:
+    service, conversation, session = _service(chunks=[])
+    assistant_message = service.conversations.add_message(
+        conversation=conversation,
+        role="assistant",
+        content="Grounded answer.",
+    )
+
+    feedback = service.record_feedback(message_id=assistant_message.id, rating="positive")
+
+    assert session.commits == 1
+    assert feedback.message_id == assistant_message.id
+    assert feedback.rating == "positive"
+
+
+def test_record_feedback_rejects_user_message() -> None:
+    service, conversation, _session = _service(chunks=[])
+    user_message = service.conversations.add_message(
+        conversation=conversation,
+        role="user",
+        content="What changed?",
+    )
+
+    try:
+        service.record_feedback(message_id=user_message.id, rating="negative")
+    except ValueError as exc:
+        assert "assistant messages" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError.")

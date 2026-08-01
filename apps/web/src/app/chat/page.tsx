@@ -7,6 +7,8 @@ import {
   MessageSquareIcon,
   PlusIcon,
   RefreshCwIcon,
+  ThumbsDownIcon,
+  ThumbsUpIcon,
   Trash2Icon,
   UserIcon,
 } from "lucide-react"
@@ -33,6 +35,7 @@ import {
   AnswerCitation,
   Conversation,
   ConversationMessage,
+  FeedbackRating,
   KnowledgeBase,
   RetrievalResult,
   createConversation,
@@ -40,6 +43,7 @@ import {
   deleteConversation,
   listConversations,
   listKnowledgeBases,
+  recordMessageFeedback,
   streamConversationMessage,
 } from "@/lib/api"
 import { cn } from "@/lib/utils"
@@ -61,7 +65,8 @@ export default function ChatPage() {
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState("")
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [selectedConversationId, setSelectedConversationId] = useState("")
-  const [latestSources, setLatestSources] = useState<SourceState>(EMPTY_SOURCES)
+  const [selectedSourceMessageId, setSelectedSourceMessageId] = useState("")
+  const [pendingFeedbackMessageId, setPendingFeedbackMessageId] = useState("")
   const [busyState, setBusyState] = useState<BusyState>("loading")
   const [error, setError] = useState<string | null>(null)
   const [conversationToDeleteId, setConversationToDeleteId] = useState<string | null>(null)
@@ -82,6 +87,27 @@ export default function ChatPage() {
   const conversationToDelete = useMemo(
     () => conversations.find((conversation) => conversation.id === conversationToDeleteId),
     [conversations, conversationToDeleteId]
+  )
+
+  const selectedSourceMessage = useMemo(() => {
+    const assistantMessages =
+      selectedConversation?.messages.filter((message) => message.role === "assistant") ?? []
+    return (
+      assistantMessages.find((message) => message.id === selectedSourceMessageId) ??
+      latestAssistantMessageWithSources(assistantMessages) ??
+      assistantMessages.at(-1)
+    )
+  }, [selectedConversation, selectedSourceMessageId])
+
+  const selectedSources = useMemo<SourceState>(
+    () =>
+      selectedSourceMessage
+        ? {
+            citations: selectedSourceMessage.citations ?? [],
+            sourceChunks: selectedSourceMessage.source_chunks ?? [],
+          }
+        : EMPTY_SOURCES,
+    [selectedSourceMessage]
   )
 
   const loadData = useCallback(async () => {
@@ -108,7 +134,7 @@ export default function ChatPage() {
       setSelectedKnowledgeBaseId(selectedBaseId)
       setConversations(chats)
       setSelectedConversationId(selectedChat?.id ?? "")
-      setLatestSources(EMPTY_SOURCES)
+      setSelectedSourceMessageId("")
     } catch (caught) {
       setError(errorMessage(caught))
     } finally {
@@ -136,7 +162,7 @@ export default function ChatPage() {
         setSelectedKnowledgeBaseId(selectedBaseId)
         setConversations(chats)
         setSelectedConversationId(selectedChat?.id ?? "")
-        setLatestSources(EMPTY_SOURCES)
+        setSelectedSourceMessageId("")
       } catch (caught) {
         if (active) {
           setError(errorMessage(caught))
@@ -169,7 +195,7 @@ export default function ChatPage() {
       })
       setConversations((current) => [created, ...current])
       setSelectedConversationId(created.id)
-      setLatestSources(EMPTY_SOURCES)
+      setSelectedSourceMessageId("")
     } catch (caught) {
       setError(errorMessage(caught))
     } finally {
@@ -194,7 +220,7 @@ export default function ChatPage() {
 
       setConversations(nextConversations)
       setSelectedConversationId(nextSelectedConversation?.id ?? "")
-      setLatestSources(EMPTY_SOURCES)
+      setSelectedSourceMessageId("")
       setConversationToDeleteId(null)
     } catch (caught) {
       setError(errorMessage(caught))
@@ -211,7 +237,7 @@ export default function ChatPage() {
 
     setBusyState("sending")
     setError(null)
-    setLatestSources(EMPTY_SOURCES)
+    setSelectedSourceMessageId("")
 
     const activeConversation = await ensureConversation(content)
     if (!activeConversation) {
@@ -257,10 +283,16 @@ export default function ChatPage() {
         }
 
         if (event.event === "sources") {
-          setLatestSources({
-            citations: event.data.citations,
-            sourceChunks: event.data.source_chunks,
-          })
+          setConversations((current) =>
+            setMessageSources(
+              current,
+              activeConversation.id,
+              pendingAssistantId,
+              event.data.citations,
+              event.data.source_chunks
+            )
+          )
+          setSelectedSourceMessageId(pendingAssistantId)
         }
 
         if (event.event === "message_done") {
@@ -268,6 +300,7 @@ export default function ChatPage() {
           setConversations((current) =>
             replaceConversation(current, event.data.conversation)
           )
+          setSelectedSourceMessageId(event.data.assistant_message.id)
         }
 
         if (event.event === "error") {
@@ -296,6 +329,30 @@ export default function ChatPage() {
       )
     } finally {
       setBusyState("idle")
+    }
+  }
+
+  async function handleFeedback(message: ConversationMessage, rating: FeedbackRating) {
+    if (message.id.startsWith("pending-")) {
+      return
+    }
+
+    const previousRating = message.feedback_rating
+    setPendingFeedbackMessageId(message.id)
+    setError(null)
+    setConversations((current) =>
+      setMessageFeedback(current, message.conversation_id, message.id, rating)
+    )
+
+    try {
+      await recordMessageFeedback(message.id, rating)
+    } catch (caught) {
+      setConversations((current) =>
+        setMessageFeedback(current, message.conversation_id, message.id, previousRating)
+      )
+      setError(errorMessage(caught))
+    } finally {
+      setPendingFeedbackMessageId("")
     }
   }
 
@@ -368,7 +425,7 @@ export default function ChatPage() {
                   (conversation) => conversation.knowledge_base_id === event.target.value
                 )
                 setSelectedConversationId(nextConversation?.id ?? "")
-                setLatestSources(EMPTY_SOURCES)
+                setSelectedSourceMessageId("")
               }}
               className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
@@ -404,7 +461,7 @@ export default function ChatPage() {
                       type="button"
                       onClick={() => {
                         setSelectedConversationId(conversation.id)
-                        setLatestSources(EMPTY_SOURCES)
+                        setSelectedSourceMessageId("")
                       }}
                       className="min-w-0 flex-1 rounded-md px-1 py-1 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
@@ -456,7 +513,14 @@ export default function ChatPage() {
                 </div>
               ) : (
                 selectedConversation.messages.map((message) => (
-                  <MessageBubble key={message.id} message={message} />
+                  <MessageBubble
+                    key={message.id}
+                    message={message}
+                    isSourceSelected={message.id === selectedSourceMessage?.id}
+                    isFeedbackPending={message.id === pendingFeedbackMessageId}
+                    onSelectSources={() => setSelectedSourceMessageId(message.id)}
+                    onFeedback={(rating) => void handleFeedback(message, rating)}
+                  />
                 ))
               )}
             </div>
@@ -470,8 +534,8 @@ export default function ChatPage() {
         </section>
 
         <SourcePanel
-          citations={latestSources.citations}
-          sourceChunks={latestSources.sourceChunks}
+          citations={selectedSources.citations}
+          sourceChunks={selectedSources.sourceChunks}
         />
       </div>
 
@@ -515,8 +579,23 @@ export default function ChatPage() {
   )
 }
 
-function MessageBubble({ message }: { message: ConversationMessage }) {
+function MessageBubble({
+  message,
+  isSourceSelected,
+  isFeedbackPending,
+  onSelectSources,
+  onFeedback,
+}: {
+  message: ConversationMessage
+  isSourceSelected: boolean
+  isFeedbackPending: boolean
+  onSelectSources: () => void
+  onFeedback: (rating: FeedbackRating) => void
+}) {
   const isAssistant = message.role === "assistant"
+  const sourceChunks = message.source_chunks ?? []
+  const feedbackRating = message.feedback_rating ?? null
+  const hasSources = sourceChunks.length > 0
 
   return (
     <div className={cn("flex gap-3", isAssistant ? "justify-start" : "justify-end")}>
@@ -525,17 +604,64 @@ function MessageBubble({ message }: { message: ConversationMessage }) {
           <BotIcon className="size-4" />
         </div>
       ) : null}
-      <div
-        className={cn(
-          "max-w-[80%] rounded-lg border px-4 py-3 text-sm leading-6",
-          isAssistant ? "bg-background" : "bg-primary text-primary-foreground"
-        )}
-      >
-        {message.content ? (
-          <p className="whitespace-pre-wrap">{message.content}</p>
-        ) : (
-          <TypingIndicator />
-        )}
+      <div className="flex max-w-[80%] flex-col items-start gap-2">
+        <button
+          type="button"
+          disabled={!isAssistant}
+          onClick={isAssistant ? onSelectSources : undefined}
+          className={cn(
+            "w-full rounded-lg border px-4 py-3 text-left text-sm leading-6 outline-none",
+            isAssistant
+              ? "bg-background focus-visible:ring-2 focus-visible:ring-ring"
+              : "cursor-default bg-primary text-primary-foreground",
+            isAssistant && hasSources && "hover:bg-muted/60",
+            isAssistant && isSourceSelected && hasSources && "border-primary"
+          )}
+        >
+          {message.content ? (
+            <p className="whitespace-pre-wrap">{message.content}</p>
+          ) : (
+            <TypingIndicator />
+          )}
+        </button>
+
+        {isAssistant && message.content ? (
+          <div className="flex items-center gap-1">
+            <Button
+              type="button"
+              variant={feedbackRating === "positive" ? "secondary" : "ghost"}
+              size="icon"
+              aria-label="Mark assistant response helpful"
+              disabled={isFeedbackPending || message.id.startsWith("pending-")}
+              onClick={() => onFeedback("positive")}
+              className="size-8"
+            >
+              <ThumbsUpIcon className="size-4" />
+            </Button>
+            <Button
+              type="button"
+              variant={feedbackRating === "negative" ? "secondary" : "ghost"}
+              size="icon"
+              aria-label="Mark assistant response not helpful"
+              disabled={isFeedbackPending || message.id.startsWith("pending-")}
+              onClick={() => onFeedback("negative")}
+              className="size-8"
+            >
+              <ThumbsDownIcon className="size-4" />
+            </Button>
+            {hasSources ? (
+              <Button
+                type="button"
+                variant={isSourceSelected ? "secondary" : "ghost"}
+                size="sm"
+                onClick={onSelectSources}
+                className="h-8"
+              >
+                Sources
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       {!isAssistant ? (
         <div className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-background">
@@ -573,6 +699,9 @@ function createOptimisticMessage(
     content,
     model_name: null,
     created_at: now,
+    citations: [],
+    source_chunks: [],
+    feedback_rating: null,
   }
 }
 
@@ -673,6 +802,64 @@ function setMessageContent(
       ),
     }
   })
+}
+
+function setMessageSources(
+  conversations: Conversation[],
+  conversationId: string,
+  messageId: string,
+  citations: AnswerCitation[],
+  sourceChunks: RetrievalResult[]
+): Conversation[] {
+  return conversations.map((conversation) => {
+    if (conversation.id !== conversationId) {
+      return conversation
+    }
+
+    return {
+      ...conversation,
+      messages: conversation.messages.map((message) =>
+        message.id === messageId
+          ? {
+              ...message,
+              citations,
+              source_chunks: sourceChunks,
+            }
+          : message
+      ),
+    }
+  })
+}
+
+function setMessageFeedback(
+  conversations: Conversation[],
+  conversationId: string,
+  messageId: string,
+  rating: FeedbackRating | null
+): Conversation[] {
+  return conversations.map((conversation) => {
+    if (conversation.id !== conversationId) {
+      return conversation
+    }
+
+    return {
+      ...conversation,
+      messages: conversation.messages.map((message) =>
+        message.id === messageId
+          ? {
+              ...message,
+              feedback_rating: rating,
+            }
+          : message
+      ),
+    }
+  })
+}
+
+function latestAssistantMessageWithSources(
+  messages: ConversationMessage[]
+): ConversationMessage | undefined {
+  return [...messages].reverse().find((message) => (message.source_chunks ?? []).length > 0)
 }
 
 function errorMessage(caught: unknown): string {

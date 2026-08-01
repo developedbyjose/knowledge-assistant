@@ -47,9 +47,25 @@ Baseline settings:
 Representative checks:
 
 - "How are query embeddings ranked?" should return `retrieval-policy.pdf` in
-  the top result.
+  the top result on page 1.
 - "What should analysts do before answer generation?" should return
-  `onboarding-notes.pdf` in the top result.
+  `onboarding-notes.pdf` in the top result on page 1.
+- "Which documents are eligible for vector search results?" should return
+  `retrieval-policy.pdf` within the configured top-k window.
+- "When should analysts record the first baseline?" should return
+  `onboarding-notes.pdf` within the configured top-k window.
+
+Initial metrics live in `app/rag/evaluation`:
+
+- `top_1_accuracy`: fraction of questions where the first retrieved source
+  matches the expected filename and page.
+- `top_k_hit_rate`: fraction of questions where any source within the requested
+  top-k window matches the expected filename and page.
+
+The baseline fixture records each question's expected filename, expected page
+number, and expected top-k window. These metrics measure retrieval only; answer
+generation quality and citation faithfulness should be evaluated separately
+after retrieval passes.
 
 Commands:
 

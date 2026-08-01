@@ -38,3 +38,15 @@ class Message(Base):
     )
 
     conversation = relationship("Conversation", back_populates="messages")
+    citations = relationship(
+        "MessageCitation",
+        back_populates="message",
+        cascade="all, delete-orphan",
+        order_by="MessageCitation.rank",
+    )
+    feedback = relationship(
+        "MessageFeedback",
+        back_populates="message",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )

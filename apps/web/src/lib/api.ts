@@ -46,7 +46,10 @@ export type AnswerCitation = {
   page_number: number | null
   chunk_index: number
   rank: number
+  similarity_score: number | null
 }
+
+export type FeedbackRating = "positive" | "negative"
 
 export type CitedAnswer = {
   question: string
@@ -64,6 +67,9 @@ export type ConversationMessage = {
   content: string
   model_name: string | null
   created_at: string
+  citations: AnswerCitation[]
+  source_chunks: RetrievalResult[]
+  feedback_rating: FeedbackRating | null
 }
 
 export type Conversation = {
@@ -213,19 +219,22 @@ export async function createConversation(payload: {
   knowledge_base_id: string
   title?: string | null
 }): Promise<Conversation> {
-  return apiFetch("/conversations", {
+  const conversation = await apiFetch<Conversation>("/conversations", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   })
+  return normalizeConversation(conversation)
 }
 
 export async function listConversations(): Promise<Conversation[]> {
-  return apiFetch("/conversations")
+  const conversations = await apiFetch<Conversation[]>("/conversations")
+  return conversations.map(normalizeConversation)
 }
 
 export async function getConversation(id: string): Promise<Conversation> {
-  return apiFetch(`/conversations/${id}`)
+  const conversation = await apiFetch<Conversation>(`/conversations/${id}`)
+  return normalizeConversation(conversation)
 }
 
 export async function deleteConversation(id: string): Promise<void> {
@@ -237,11 +246,12 @@ export async function sendConversationMessage(
   content: string,
   limit = 5
 ): Promise<ConversationMessageResponse> {
-  return apiFetch(`/conversations/${conversationId}/messages`, {
+  const response = await apiFetch<ConversationMessageResponse>(`/conversations/${conversationId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content, limit }),
   })
+  return normalizeConversationMessageResponse(response)
 }
 
 export async function streamConversationMessage(
@@ -281,7 +291,7 @@ export async function streamConversationMessage(
     for (const frame of frames) {
       const event = parseSseFrame(frame)
       if (event) {
-        onEvent(event)
+        onEvent(normalizeChatStreamEvent(event))
       }
     }
   }
@@ -289,9 +299,25 @@ export async function streamConversationMessage(
   if (buffer.trim()) {
     const event = parseSseFrame(buffer)
     if (event) {
-      onEvent(event)
+      onEvent(normalizeChatStreamEvent(event))
     }
   }
+}
+
+export async function recordMessageFeedback(
+  messageId: string,
+  rating: FeedbackRating
+): Promise<{
+  id: string
+  message_id: string
+  rating: FeedbackRating
+  created_at: string
+}> {
+  return apiFetch(`/messages/${messageId}/feedback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rating }),
+  })
 }
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -337,4 +363,67 @@ function parseSseFrame(frame: string): ChatStreamEvent | null {
     event: eventLine.replace("event:", "").trim(),
     data: JSON.parse(dataLine.replace("data:", "").trim()),
   } as ChatStreamEvent
+}
+
+function normalizeConversation(conversation: Conversation): Conversation {
+  return {
+    ...conversation,
+    messages: (conversation.messages ?? []).map(normalizeMessage),
+  }
+}
+
+function normalizeMessage(message: ConversationMessage): ConversationMessage {
+  return {
+    ...message,
+    citations: Array.isArray(message.citations) ? message.citations : [],
+    source_chunks: Array.isArray(message.source_chunks) ? message.source_chunks : [],
+    feedback_rating: message.feedback_rating ?? null,
+  }
+}
+
+function normalizeConversationMessageResponse(
+  response: ConversationMessageResponse
+): ConversationMessageResponse {
+  return {
+    ...response,
+    conversation: normalizeConversation(response.conversation),
+    user_message: normalizeMessage(response.user_message),
+    assistant_message: normalizeMessage(response.assistant_message),
+    citations: Array.isArray(response.citations) ? response.citations : [],
+    source_chunks: Array.isArray(response.source_chunks) ? response.source_chunks : [],
+  }
+}
+
+function normalizeChatStreamEvent(event: ChatStreamEvent): ChatStreamEvent {
+  if (event.event === "message_start") {
+    return {
+      ...event,
+      data: {
+        ...event.data,
+        user_message: normalizeMessage(event.data.user_message),
+      },
+    }
+  }
+
+  if (event.event === "sources") {
+    return {
+      ...event,
+      data: {
+        citations: Array.isArray(event.data.citations) ? event.data.citations : [],
+        source_chunks: Array.isArray(event.data.source_chunks) ? event.data.source_chunks : [],
+      },
+    }
+  }
+
+  if (event.event === "message_done") {
+    return {
+      ...event,
+      data: {
+        conversation: normalizeConversation(event.data.conversation),
+        assistant_message: normalizeMessage(event.data.assistant_message),
+      },
+    }
+  }
+
+  return event
 }

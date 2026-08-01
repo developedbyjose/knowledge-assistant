@@ -19,6 +19,8 @@ from app.schemas.conversation import (
     ConversationCreate,
     ConversationMessageResponse,
     ConversationRead,
+    MessageFeedbackCreate,
+    MessageFeedbackRead,
     MessageCreate,
 )
 from app.schemas.document import DocumentRead
@@ -304,6 +306,20 @@ async def create_conversation_message(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ChatModelError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+@router.post("/messages/{message_id}/feedback", response_model=MessageFeedbackRead)
+def record_message_feedback(
+    message_id: UUID,
+    payload: MessageFeedbackCreate,
+    service: Annotated[ConversationService, Depends(get_conversation_service)],
+) -> MessageFeedbackRead:
+    try:
+        return service.record_feedback(message_id=message_id, rating=payload.rating)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 async def _format_sse(events):  # noqa: ANN001, ANN202

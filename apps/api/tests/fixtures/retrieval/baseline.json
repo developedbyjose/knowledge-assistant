@@ -21,11 +21,27 @@
   "queries": [
     {
       "question": "How are query embeddings ranked?",
-      "expected_filename": "retrieval-policy.pdf"
+      "expected_filename": "retrieval-policy.pdf",
+      "expected_page_number": 1,
+      "expected_top_k": 1
     },
     {
       "question": "What should analysts do before answer generation?",
-      "expected_filename": "onboarding-notes.pdf"
+      "expected_filename": "onboarding-notes.pdf",
+      "expected_page_number": 1,
+      "expected_top_k": 1
+    },
+    {
+      "question": "Which documents are eligible for vector search results?",
+      "expected_filename": "retrieval-policy.pdf",
+      "expected_page_number": 1,
+      "expected_top_k": 2
+    },
+    {
+      "question": "When should analysts record the first baseline?",
+      "expected_filename": "onboarding-notes.pdf",
+      "expected_page_number": 1,
+      "expected_top_k": 2
     }
   ]
 }

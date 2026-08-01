@@ -3,5 +3,15 @@ from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 from app.models.knowledge_base import KnowledgeBase
 from app.models.message import Message
+from app.models.message_citation import MessageCitation
+from app.models.message_feedback import MessageFeedback
 
-__all__ = ["Conversation", "Document", "DocumentChunk", "KnowledgeBase", "Message"]
+__all__ = [
+    "Conversation",
+    "Document",
+    "DocumentChunk",
+    "KnowledgeBase",
+    "Message",
+    "MessageCitation",
+    "MessageFeedback",
+]

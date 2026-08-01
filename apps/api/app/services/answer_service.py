@@ -95,6 +95,7 @@ class AnswerService:
                     page_number=chunk.page_number,
                     chunk_index=chunk.chunk_index,
                     rank=chunk.rank,
+                    similarity_score=chunk.similarity_score,
                 )
             )
 
