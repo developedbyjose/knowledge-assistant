@@ -1,11 +1,13 @@
 "use client"
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react"
+import Link from "next/link"
 import {
   BookOpenIcon,
   DatabaseIcon,
   FileTextIcon,
   Loader2Icon,
+  MessageSquareIcon,
   RefreshCwIcon,
   RotateCcwIcon,
   SearchIcon,
@@ -17,7 +19,7 @@ import { StatusBadge } from "@/components/common/status-badge"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
 import {
   Card,
   CardAction,
@@ -26,7 +28,23 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Table,
   TableBody,
@@ -41,6 +59,7 @@ import {
   KnowledgeBase,
   RetrievalResult,
   createKnowledgeBase,
+  deleteKnowledgeBase,
   deleteDocument,
   listKnowledgeBases,
   listDocuments,
@@ -48,6 +67,7 @@ import {
   retrieveChunks,
   uploadPdf,
 } from "@/lib/api"
+import { cn } from "@/lib/utils"
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
@@ -59,6 +79,7 @@ type BusyState =
   | "retrieving"
   | "refreshing"
   | "deleting"
+  | "deletingCollection"
   | "reprocessing"
 
 export default function Home() {
@@ -72,11 +93,17 @@ export default function Home() {
   const [hasRetrieved, setHasRetrieved] = useState(false)
   const [busyState, setBusyState] = useState<BusyState>("loading")
   const [activeDocumentId, setActiveDocumentId] = useState<string | null>(null)
+  const [knowledgeBaseToDeleteId, setKnowledgeBaseToDeleteId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const selectedKnowledgeBase = useMemo(
     () => knowledgeBases.find((knowledgeBase) => knowledgeBase.id === selectedKnowledgeBaseId),
     [knowledgeBases, selectedKnowledgeBaseId]
+  )
+
+  const knowledgeBaseToDelete = useMemo(
+    () => knowledgeBases.find((knowledgeBase) => knowledgeBase.id === knowledgeBaseToDeleteId),
+    [knowledgeBases, knowledgeBaseToDeleteId]
   )
 
   const loadDocuments = useCallback(
@@ -281,6 +308,40 @@ export default function Home() {
     }
   }
 
+  async function handleDeleteKnowledgeBase() {
+    if (!knowledgeBaseToDelete) {
+      return
+    }
+
+    try {
+      setBusyState("deletingCollection")
+      setError(null)
+      setResults([])
+      setHasRetrieved(false)
+      await deleteKnowledgeBase(knowledgeBaseToDelete.id)
+
+      const nextKnowledgeBases = knowledgeBases.filter(
+        (knowledgeBase) => knowledgeBase.id !== knowledgeBaseToDelete.id
+      )
+      const nextSelectedKnowledgeBase =
+        nextKnowledgeBases.find((knowledgeBase) => knowledgeBase.chunk_count > 0) ??
+        nextKnowledgeBases[0]
+
+      setKnowledgeBases(nextKnowledgeBases)
+      setSelectedKnowledgeBaseId(nextSelectedKnowledgeBase?.id ?? "")
+      setDocuments([])
+      setKnowledgeBaseToDeleteId(null)
+
+      if (nextSelectedKnowledgeBase) {
+        await loadDocuments(nextSelectedKnowledgeBase.id)
+      }
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setBusyState("idle")
+    }
+  }
+
   async function handleReprocessDocument(documentId: string) {
     try {
       setBusyState("reprocessing")
@@ -307,9 +368,15 @@ export default function Home() {
           title="Retrieval Lab"
           description="Upload one PDF, index its chunks, and verify the top five retrieval matches before connecting an LLM."
           actions={
-            <Badge variant="outline" className="hidden sm:inline-flex">
-              Retrieval only
-            </Badge>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="hidden sm:inline-flex">
+                Retrieval only
+              </Badge>
+              <Link href="/chat" className={cn(buttonVariants())}>
+                <MessageSquareIcon aria-hidden="true" />
+                Chat
+              </Link>
+            </div>
           }
         />
 
@@ -334,23 +401,38 @@ export default function Home() {
                   <label htmlFor="knowledge-base" className="text-sm font-medium">
                     Active collection
                   </label>
-                  <select
-                    id="knowledge-base"
+                  <Select
                     value={selectedKnowledgeBaseId}
-                    onChange={(event) => {
-                      setSelectedKnowledgeBaseId(event.target.value)
+                    onValueChange={(value) => {
+                      if (value === null) {
+                        return
+                      }
+                      setSelectedKnowledgeBaseId(value)
                       setResults([])
                       setHasRetrieved(false)
                     }}
-                    className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-                    disabled={busyState === "loading"}
+                    disabled={busyState === "loading" || knowledgeBases.length === 0}
                   >
-                    {knowledgeBases.map((knowledgeBase) => (
-                      <option key={knowledgeBase.id} value={knowledgeBase.id}>
-                        {knowledgeBase.name} ({knowledgeBase.chunk_count} chunks)
-                      </option>
-                    ))}
-                  </select>
+                    <SelectTrigger id="knowledge-base">
+                      <SelectValue placeholder="Select collection">
+                        {(value) => {
+                          const knowledgeBase = knowledgeBases.find(
+                            (current) => current.id === value
+                          )
+                          return knowledgeBase
+                            ? `${knowledgeBase.name} (${knowledgeBase.chunk_count} chunks)`
+                            : "Select collection"
+                        }}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {knowledgeBases.map((knowledgeBase) => (
+                        <SelectItem key={knowledgeBase.id} value={knowledgeBase.id}>
+                          {knowledgeBase.name} ({knowledgeBase.chunk_count} chunks)
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 <form className="space-y-3" onSubmit={handleCreateKnowledgeBase}>
@@ -375,11 +457,32 @@ export default function Home() {
 
                 {selectedKnowledgeBase ? (
                   <div className="rounded-lg border bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">
-                    <p className="font-medium text-foreground">{selectedKnowledgeBase.name}</p>
-                    <p>{selectedKnowledgeBase.embedding_model}</p>
-                    <p>
-                      {selectedKnowledgeBase.document_count} documents, {selectedKnowledgeBase.chunk_count} chunks
-                    </p>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="break-words font-medium text-foreground">
+                          {selectedKnowledgeBase.name}
+                        </p>
+                        <p>{selectedKnowledgeBase.embedding_model}</p>
+                        <p>
+                          {selectedKnowledgeBase.document_count} documents, {selectedKnowledgeBase.chunk_count} chunks
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        className="shrink-0"
+                        disabled={isBusy}
+                        onClick={() => setKnowledgeBaseToDeleteId(selectedKnowledgeBase.id)}
+                      >
+                        {busyState === "deletingCollection" ? (
+                          <Loader2Icon className="animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Trash2Icon aria-hidden="true" />
+                        )}
+                        Delete
+                      </Button>
+                    </div>
                   </div>
                 ) : null}
               </CardContent>
@@ -619,6 +722,43 @@ export default function Home() {
             </Card>
           </section>
         </section>
+
+        <Dialog
+          open={knowledgeBaseToDeleteId !== null}
+          onOpenChange={(open) => {
+            if (!open) {
+              setKnowledgeBaseToDeleteId(null)
+            }
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Delete Collection</DialogTitle>
+              <DialogDescription>
+                This will permanently delete{" "}
+                <span className="font-medium text-foreground">
+                  {knowledgeBaseToDelete?.name ?? "this collection"}
+                </span>{" "}
+                and all of its documents and chunks.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
+              <Button
+                variant="destructive"
+                disabled={!knowledgeBaseToDelete || busyState === "deletingCollection"}
+                onClick={() => void handleDeleteKnowledgeBase()}
+              >
+                {busyState === "deletingCollection" ? (
+                  <Loader2Icon className="animate-spin" aria-hidden="true" />
+                ) : (
+                  <Trash2Icon aria-hidden="true" />
+                )}
+                Delete
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </PageContainer>
     </main>
   )
