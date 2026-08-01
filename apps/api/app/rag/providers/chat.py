@@ -1,6 +1,10 @@
 from typing import Protocol
 
 
+class ChatModelError(RuntimeError):
+    """Raised when a chat model provider cannot produce an answer."""
+
+
 class ChatModel(Protocol):
     async def generate(
         self,

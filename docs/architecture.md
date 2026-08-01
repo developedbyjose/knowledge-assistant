@@ -23,5 +23,8 @@ commands create or reuse a document record, transition it through
 text, chunk pages with source metadata, generate local embeddings, and store the
 chunk vectors in pgvector.
 
-The frontend currently exposes a focused Retrieval Lab instead of a chat UI so
-retrieval quality can be validated before an LLM is connected.
+The backend now layers cited answer generation on top of retrieval. Answer
+routes call an application service, the service retrieves source chunks, and the
+Gemini chat provider remains behind the model-provider interface. The frontend
+still exposes a focused Retrieval Lab UI, with client support for the cited
+answer endpoint available for the next UI slice.

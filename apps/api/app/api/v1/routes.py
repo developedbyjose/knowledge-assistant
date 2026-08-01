@@ -4,13 +4,16 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
 
 from app.api.v1.dependencies import (
+    get_answer_service,
     get_document_service,
     get_knowledge_base_service,
     get_retrieval_service,
 )
+from app.rag.providers.chat import ChatModelError
 from app.schemas.document import DocumentRead
 from app.schemas.knowledge_base import KnowledgeBaseCreate, KnowledgeBaseRead, KnowledgeBaseUpdate
-from app.schemas.retrieval import DocumentUploadRead, RetrievalQuery, RetrievalResults
+from app.schemas.retrieval import CitedAnswer, DocumentUploadRead, RetrievalQuery, RetrievalResults
+from app.services.answer_service import AnswerService
 from app.services.document_service import DocumentService
 from app.services.knowledge_base_service import KnowledgeBaseService
 from app.services.retrieval_service import RetrievalService
@@ -184,3 +187,26 @@ def retrieve_chunks(
     service: Annotated[RetrievalService, Depends(get_retrieval_service)],
 ) -> RetrievalResults:
     return _retrieve_chunks(knowledge_base_id, payload, service)
+
+
+@router.post(
+    "/knowledge-bases/{knowledge_base_id}/answers",
+    response_model=CitedAnswer,
+)
+async def answer_question(
+    knowledge_base_id: UUID,
+    payload: RetrievalQuery,
+    service: Annotated[AnswerService, Depends(get_answer_service)],
+) -> CitedAnswer:
+    try:
+        return await service.answer(
+            knowledge_base_id=knowledge_base_id,
+            question=payload.question,
+            limit=payload.limit,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ChatModelError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc

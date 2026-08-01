@@ -39,6 +39,22 @@ export type RetrievalResult = {
   metadata: Record<string, unknown>
 }
 
+export type AnswerCitation = {
+  chunk_id: string
+  document_id: string
+  filename: string
+  page_number: number | null
+  chunk_index: number
+  rank: number
+}
+
+export type CitedAnswer = {
+  question: string
+  answer: string
+  citations: AnswerCitation[]
+  source_chunks: RetrievalResult[]
+}
+
 export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
   return apiFetch("/knowledge-bases")
 }
@@ -111,6 +127,18 @@ export async function retrieveChunks(
   limit = 5
 ): Promise<{ question: string; results: RetrievalResult[] }> {
   return apiFetch(`/knowledge-bases/${knowledgeBaseId}/query-embedding`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question, limit }),
+  })
+}
+
+export async function answerQuestion(
+  knowledgeBaseId: string,
+  question: string,
+  limit = 5
+): Promise<CitedAnswer> {
+  return apiFetch(`/knowledge-bases/${knowledgeBaseId}/answers`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ question, limit }),

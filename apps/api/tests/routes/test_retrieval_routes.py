@@ -5,13 +5,15 @@ from fastapi.testclient import TestClient
 
 from app.api.v1.dependencies import (
     get_document_service,
+    get_answer_service,
     get_knowledge_base_service,
     get_retrieval_service,
 )
 from app.main import app
+from app.rag.providers.chat import ChatModelError
 from app.schemas.document import DocumentRead
 from app.schemas.knowledge_base import KnowledgeBaseRead
-from app.schemas.retrieval import DocumentUploadRead, RetrievalResult, RetrievalResults
+from app.schemas.retrieval import AnswerCitation, CitedAnswer, DocumentUploadRead, RetrievalResult, RetrievalResults
 
 MISSING_ID = UUID("00000000-0000-0000-0000-000000000404")
 PROCESSED_ID = UUID("00000000-0000-0000-0000-000000000101")
@@ -142,6 +144,47 @@ class FakeRetrievalService:
                 RetrievalResult(
                     chunk_id=uuid4(),
                     document_id=uuid4(),
+                    filename="retrieval-baseline.pdf",
+                    rank=1,
+                    similarity_score=0.92,
+                    content="Query embeddings rank policy chunks above onboarding chunks.",
+                    page_number=1,
+                    chunk_index=0,
+                    metadata={"source": "pdf", "page_number": 1},
+                )
+            ],
+        )
+
+
+class FakeAnswerService:
+    def __init__(self, *, error=None):  # noqa: ANN001
+        self.error = error
+
+    async def answer(self, *, knowledge_base_id, question, limit):  # noqa: ANN001, ANN201
+        if self.error:
+            raise self.error
+        if knowledge_base_id == MISSING_ID:
+            raise LookupError("Knowledge base not found.")
+
+        chunk_id = uuid4()
+        document_id = uuid4()
+        return CitedAnswer(
+            question=question,
+            answer="Query embeddings rank policy chunks above onboarding chunks [1].",
+            citations=[
+                AnswerCitation(
+                    chunk_id=chunk_id,
+                    document_id=document_id,
+                    filename="retrieval-baseline.pdf",
+                    page_number=1,
+                    chunk_index=0,
+                    rank=1,
+                )
+            ],
+            source_chunks=[
+                RetrievalResult(
+                    chunk_id=chunk_id,
+                    document_id=document_id,
                     filename="retrieval-baseline.pdf",
                     rank=1,
                     similarity_score=0.92,
@@ -290,6 +333,82 @@ def test_query_embedding_missing_knowledge_base_returns_404() -> None:
 
     app.dependency_overrides.clear()
     assert response.status_code == 404
+
+
+def test_answer_question_returns_cited_answer() -> None:
+    app.dependency_overrides[get_answer_service] = lambda: FakeAnswerService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/answers",
+        json={"question": "How are chunks ranked?", "limit": 5},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    body = response.json()
+    assert body["question"] == "How are chunks ranked?"
+    assert body["answer"].endswith("[1].")
+    assert body["citations"][0]["filename"] == "retrieval-baseline.pdf"
+    assert body["citations"][0]["rank"] == 1
+    assert body["source_chunks"][0]["metadata"] == {"source": "pdf", "page_number": 1}
+
+
+def test_answer_question_validates_payload() -> None:
+    app.dependency_overrides[get_answer_service] = lambda: FakeAnswerService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/answers",
+        json={"question": "", "limit": 21},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 422
+
+
+def test_answer_question_missing_knowledge_base_returns_404() -> None:
+    app.dependency_overrides[get_answer_service] = lambda: FakeAnswerService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{MISSING_ID}/answers",
+        json={"question": "How are chunks ranked?", "limit": 5},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 404
+
+
+def test_answer_question_retrieval_config_error_returns_400() -> None:
+    app.dependency_overrides[get_answer_service] = lambda: FakeAnswerService(
+        error=ValueError("Knowledge base embedding model does not match the configured embedding model.")
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/answers",
+        json={"question": "How are chunks ranked?", "limit": 5},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 400
+
+
+def test_answer_question_provider_error_returns_502() -> None:
+    app.dependency_overrides[get_answer_service] = lambda: FakeAnswerService(
+        error=ChatModelError("Gemini API key is not configured.")
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/answers",
+        json={"question": "How are chunks ranked?", "limit": 5},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Gemini API key is not configured."
 
 
 def test_create_knowledge_base_route() -> None:

@@ -19,8 +19,9 @@ generation:
    `POST /api/v1/knowledge-bases/{id}/query-embedding`.
 10. Inspect the returned chunks in the Retrieval Lab UI.
 
-LLM answer generation should be connected only after this flow returns relevant
-source chunks for representative PDFs and questions.
+LLM answer generation is layered on this retrieval flow, so representative PDFs
+and questions should continue to pass retrieval checks before evaluating answer
+quality.
 
 ## First Baseline
 

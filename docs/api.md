@@ -1,7 +1,7 @@
 # Knowledge Assistant API
 
-The first product API validates retrieval before LLM generation. All product
-endpoints are versioned under `/api/v1`.
+The product API supports retrieval validation and cited answer generation. All
+product endpoints are versioned under `/api/v1`.
 
 ## Knowledge Bases
 
@@ -44,5 +44,20 @@ Retrieval returns `400` if the selected knowledge base was indexed with a
 different embedding model than the current runtime configuration or if the
 query embedding dimension does not match the configured vector size.
 
-This milestone intentionally does not call Gemini or any other chat model.
+## Answers
+
+- `POST /api/v1/knowledge-bases/{id}/answers` accepts
+  `{ "question": "...", "limit": 5 }`, retrieves the top matching chunks, calls
+  the configured chat model, and returns a grounded answer with citations and
+  source chunks.
+- The response includes `question`, `answer`, `citations`, and `source_chunks`.
+  Each citation points back to a retrieved chunk with chunk/document IDs,
+  filename, page number, chunk index, and retrieval rank.
+- When retrieval returns no chunks, the API returns a graceful no-evidence
+  answer without calling the chat model.
+
+Answer generation currently uses `LLM_PROVIDER=gemini` with
+`LLM_MODEL=gemini-2.5-flash-lite`. Missing or failed chat-provider calls return
+`502`.
+
 Missing knowledge bases or documents return `404`.
