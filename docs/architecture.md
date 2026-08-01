@@ -17,5 +17,11 @@ The current persistence milestone includes only:
 - `documents`
 - `document_chunks`
 
+Document ingestion is synchronous for the first slice. Upload and reprocess
+commands create or reuse a document record, transition it through
+`pending -> processing -> processed` or `failed`, extract and clean PDF page
+text, chunk pages with source metadata, generate local embeddings, and store the
+chunk vectors in pgvector.
+
 The frontend currently exposes a focused Retrieval Lab instead of a chat UI so
 retrieval quality can be validated before an LLM is connected.

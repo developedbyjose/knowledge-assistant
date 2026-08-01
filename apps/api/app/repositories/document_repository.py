@@ -93,6 +93,9 @@ class DocumentRepository:
         chunks: list[Chunk],
         embeddings: list[list[float]],
     ) -> list[DocumentChunk]:
+        if len(chunks) != len(embeddings):
+            raise ValueError("Embedding count must match chunk count.")
+
         rows = [
             DocumentChunk(
                 document_id=document.id,

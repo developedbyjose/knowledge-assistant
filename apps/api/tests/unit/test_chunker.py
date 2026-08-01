@@ -12,3 +12,12 @@ def test_chunker_preserves_order_and_overlap() -> None:
     assert chunks[0].content.split()[-3:] == chunks[1].content.split()[:3]
     assert chunks[1].content.split()[-3:] == chunks[2].content.split()[:3]
     assert all(chunk.page_number == 1 for chunk in chunks)
+    assert chunks[0].metadata == {
+        "source": "pdf",
+        "page_number": 1,
+        "word_start": 0,
+        "word_end": 10,
+        "chunk_size": 10,
+        "overlap": 3,
+        "token_count": 10,
+    }

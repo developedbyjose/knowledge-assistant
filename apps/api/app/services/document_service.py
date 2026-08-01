@@ -15,6 +15,7 @@ from app.repositories.document_repository import DocumentRepository
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from app.schemas.document import DocumentRead
 from app.schemas.retrieval import DocumentUploadRead
+from app.services.document_processing_service import DocumentProcessingService
 
 PDF_CONTENT_TYPES = {"application/pdf", "application/x-pdf"}
 PDF_SIGNATURE = b"%PDF-"
@@ -35,6 +36,12 @@ class DocumentService:
         self.embedding_provider = embedding_provider
         self.documents = DocumentRepository(session)
         self.knowledge_bases = KnowledgeBaseRepository(session)
+        self.processor = DocumentProcessingService(
+            documents=self.documents,
+            parser=self.parser,
+            chunker=self.chunker,
+            embedding_provider=self.embedding_provider,
+        )
 
     async def upload_pdf(
         self,
@@ -76,15 +83,7 @@ class DocumentService:
             raise
 
         try:
-            self.documents.mark_processing(document)
-            pages = self.parser.parse(target_path)
-            chunks = self.chunker.chunk_pages(pages)
-            if not chunks:
-                raise ValueError("No extractable text was found in the PDF.")
-
-            embeddings = self.embedding_provider.embed_texts([chunk.content for chunk in chunks])
-            self.documents.add_chunks(document=document, chunks=chunks, embeddings=embeddings)
-            self.documents.mark_processed(document, page_count=len(pages))
+            result = self.processor.process_pdf(document=document, target_path=target_path)
             self.session.commit()
             self.session.refresh(document)
             return DocumentUploadRead(
@@ -93,7 +92,7 @@ class DocumentService:
                 original_filename=document.original_filename,
                 status=document.status,
                 page_count=document.page_count,
-                chunk_count=len(chunks),
+                chunk_count=result.chunk_count,
                 error_message=document.error_message,
             )
         except Exception as exc:
@@ -140,19 +139,11 @@ class DocumentService:
 
         target_path = Path(settings.upload_dir) / document.storage_key
         try:
-            self.documents.mark_processing(document)
-            self.documents.clear_chunks(document)
-            if not target_path.exists():
-                raise FileNotFoundError("Stored document file not found.")
-
-            pages = self.parser.parse(target_path)
-            chunks = self.chunker.chunk_pages(pages)
-            if not chunks:
-                raise ValueError("No extractable text was found in the PDF.")
-
-            embeddings = self.embedding_provider.embed_texts([chunk.content for chunk in chunks])
-            self.documents.add_chunks(document=document, chunks=chunks, embeddings=embeddings)
-            self.documents.mark_processed(document, page_count=len(pages))
+            self.processor.process_pdf(
+                document=document,
+                target_path=target_path,
+                replace_existing=True,
+            )
             self.session.commit()
             return self.get(document_id)
         except Exception as exc:
