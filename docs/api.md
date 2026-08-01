@@ -19,7 +19,9 @@ endpoints are versioned under `/api/v1`.
 
 - `POST /api/v1/knowledge-bases/{id}/documents` accepts one PDF as multipart
   field `file`, extracts text, chunks it, embeds it, and stores chunks in
-  pgvector synchronously.
+  pgvector synchronously. Uploads are stored under `UPLOAD_DIR`, must use a PDF
+  filename/content type, cannot be empty, must start with a PDF signature, and
+  are capped by `MAX_UPLOAD_BYTES` (`26214400` by default).
 - `GET /api/v1/knowledge-bases/{id}/documents` lists documents in a collection.
 - `GET /api/v1/documents/{id}` returns one document with status, page count, and
   chunk count.

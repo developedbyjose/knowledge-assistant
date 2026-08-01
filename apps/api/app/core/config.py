@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_dimensions: int = 384
     upload_dir: str = "uploads"
+    max_upload_bytes: int = 26_214_400
 
     cors_origins: str = "http://localhost:3000"
 

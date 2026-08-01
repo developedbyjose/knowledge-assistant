@@ -57,8 +57,20 @@ class FakeKnowledgeBaseService:
 
 class FakeDocumentService:
     async def upload_pdf(self, *, knowledge_base_id, upload):  # noqa: ANN001, ANN201
+        if knowledge_base_id == MISSING_ID:
+            raise LookupError("Knowledge base not found.")
+
+        content = await upload.read()
         if upload.content_type != "application/pdf":
             raise ValueError("Only PDF uploads are supported.")
+        if not (upload.filename or "").lower().endswith(".pdf"):
+            raise ValueError("Only PDF uploads are supported.")
+        if not content:
+            raise ValueError("Uploaded PDF cannot be empty.")
+        if len(content) > 26_214_400:
+            raise ValueError("Uploaded PDF must be 25 MB or smaller.")
+        if not content.startswith(b"%PDF-"):
+            raise ValueError("Uploaded file does not appear to be a valid PDF.")
 
         return DocumentUploadRead(
             id=uuid4(),
@@ -137,6 +149,48 @@ def test_rejects_non_pdf_upload() -> None:
     assert response.status_code == 400
 
 
+def test_rejects_empty_pdf_upload() -> None:
+    app.dependency_overrides[get_document_service] = lambda: FakeDocumentService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/documents",
+        files={"file": ("sample.pdf", b"", "application/pdf")},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Uploaded PDF cannot be empty."
+
+
+def test_rejects_oversized_pdf_upload() -> None:
+    app.dependency_overrides[get_document_service] = lambda: FakeDocumentService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/documents",
+        files={"file": ("sample.pdf", b"%PDF-" + (b"0" * 26_214_401), "application/pdf")},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Uploaded PDF must be 25 MB or smaller."
+
+
+def test_rejects_invalid_pdf_signature() -> None:
+    app.dependency_overrides[get_document_service] = lambda: FakeDocumentService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/documents",
+        files={"file": ("sample.pdf", b"not a pdf", "application/pdf")},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Uploaded file does not appear to be a valid PDF."
+
+
 def test_upload_pdf_returns_document_status() -> None:
     app.dependency_overrides[get_document_service] = lambda: FakeDocumentService()
     client = TestClient(app)
@@ -149,6 +203,19 @@ def test_upload_pdf_returns_document_status() -> None:
     app.dependency_overrides.clear()
     assert response.status_code == 200
     assert response.json()["status"] == "processed"
+
+
+def test_upload_missing_knowledge_base_returns_404() -> None:
+    app.dependency_overrides[get_document_service] = lambda: FakeDocumentService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{MISSING_ID}/documents",
+        files={"file": ("sample.pdf", b"%PDF-1.4", "application/pdf")},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 404
 
 
 def test_query_before_chunks_returns_empty_results() -> None:

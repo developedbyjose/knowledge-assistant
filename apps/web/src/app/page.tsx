@@ -1,13 +1,15 @@
 "use client"
 
-import { FormEvent, useEffect, useMemo, useState } from "react"
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react"
 import {
   BookOpenIcon,
-  CheckCircle2Icon,
   DatabaseIcon,
   FileTextIcon,
   Loader2Icon,
+  RefreshCwIcon,
+  RotateCcwIcon,
   SearchIcon,
+  Trash2Icon,
   UploadIcon,
 } from "lucide-react"
 
@@ -25,35 +27,76 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import {
+  KnowledgeDocument,
   KnowledgeBase,
   RetrievalResult,
-  UploadedDocument,
   createKnowledgeBase,
+  deleteDocument,
   listKnowledgeBases,
+  listDocuments,
+  reprocessDocument,
   retrieveChunks,
   uploadPdf,
 } from "@/lib/api"
 
-type BusyState = "idle" | "loading" | "creating" | "uploading" | "retrieving"
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+type BusyState =
+  | "idle"
+  | "loading"
+  | "creating"
+  | "uploading"
+  | "retrieving"
+  | "refreshing"
+  | "deleting"
+  | "reprocessing"
 
 export default function Home() {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([])
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState("")
   const [knowledgeBaseName, setKnowledgeBaseName] = useState("Retrieval Lab")
-  const [document, setDocument] = useState<UploadedDocument | null>(null)
+  const [documents, setDocuments] = useState<KnowledgeDocument[]>([])
   const [file, setFile] = useState<File | null>(null)
   const [question, setQuestion] = useState("")
   const [results, setResults] = useState<RetrievalResult[]>([])
   const [hasRetrieved, setHasRetrieved] = useState(false)
   const [busyState, setBusyState] = useState<BusyState>("loading")
+  const [activeDocumentId, setActiveDocumentId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const selectedKnowledgeBase = useMemo(
     () => knowledgeBases.find((knowledgeBase) => knowledgeBase.id === selectedKnowledgeBaseId),
     [knowledgeBases, selectedKnowledgeBaseId]
   )
+
+  const loadDocuments = useCallback(
+    async (knowledgeBaseId: string) => {
+      if (!knowledgeBaseId) {
+        setDocuments([])
+        return
+      }
+
+      const loaded = await listDocuments(knowledgeBaseId)
+      setDocuments(loaded)
+    },
+    []
+  )
+
+  const refreshKnowledgeBases = useCallback(async () => {
+    const refreshed = await listKnowledgeBases()
+    setKnowledgeBases(refreshed)
+    return refreshed
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -99,6 +142,40 @@ export default function Home() {
     }
   }, [])
 
+  useEffect(() => {
+    let active = true
+
+    async function loadSelectedDocuments() {
+      if (!selectedKnowledgeBaseId) {
+        setDocuments([])
+        return
+      }
+
+      try {
+        setBusyState((current) => (current === "idle" ? "refreshing" : current))
+        setError(null)
+        const loaded = await listDocuments(selectedKnowledgeBaseId)
+        if (active) {
+          setDocuments(loaded)
+        }
+      } catch (caught) {
+        if (active) {
+          setError(errorMessage(caught))
+        }
+      } finally {
+        if (active) {
+          setBusyState((current) => (current === "refreshing" ? "idle" : current))
+        }
+      }
+    }
+
+    loadSelectedDocuments()
+
+    return () => {
+      active = false
+    }
+  }, [selectedKnowledgeBaseId])
+
   async function handleCreateKnowledgeBase(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!knowledgeBaseName.trim()) {
@@ -116,7 +193,7 @@ export default function Home() {
       setKnowledgeBases((current) => [created, ...current])
       setSelectedKnowledgeBaseId(created.id)
       setKnowledgeBaseName("")
-      setDocument(null)
+      setDocuments([])
       setResults([])
       setHasRetrieved(false)
     } catch (caught) {
@@ -132,16 +209,20 @@ export default function Home() {
       setError("Choose a knowledge base and a PDF file.")
       return
     }
+    const validationError = validatePdf(file)
+    if (validationError) {
+      setError(validationError)
+      return
+    }
 
     try {
       setBusyState("uploading")
       setError(null)
       setResults([])
       setHasRetrieved(false)
-      const uploaded = await uploadPdf(selectedKnowledgeBaseId, file)
-      setDocument(uploaded)
-      const refreshed = await listKnowledgeBases()
-      setKnowledgeBases(refreshed)
+      await uploadPdf(selectedKnowledgeBaseId, file)
+      setFile(null)
+      await Promise.all([refreshKnowledgeBases(), loadDocuments(selectedKnowledgeBaseId)])
     } catch (caught) {
       setError(errorMessage(caught))
     } finally {
@@ -165,6 +246,54 @@ export default function Home() {
     } catch (caught) {
       setError(errorMessage(caught))
     } finally {
+      setBusyState("idle")
+    }
+  }
+
+  async function handleRefreshDocuments() {
+    if (!selectedKnowledgeBaseId) {
+      return
+    }
+
+    try {
+      setBusyState("refreshing")
+      setError(null)
+      await Promise.all([refreshKnowledgeBases(), loadDocuments(selectedKnowledgeBaseId)])
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setBusyState("idle")
+    }
+  }
+
+  async function handleDeleteDocument(documentId: string) {
+    try {
+      setBusyState("deleting")
+      setActiveDocumentId(documentId)
+      setError(null)
+      await deleteDocument(documentId)
+      await Promise.all([refreshKnowledgeBases(), loadDocuments(selectedKnowledgeBaseId)])
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setActiveDocumentId(null)
+      setBusyState("idle")
+    }
+  }
+
+  async function handleReprocessDocument(documentId: string) {
+    try {
+      setBusyState("reprocessing")
+      setActiveDocumentId(documentId)
+      setError(null)
+      setResults([])
+      setHasRetrieved(false)
+      await reprocessDocument(documentId)
+      await Promise.all([refreshKnowledgeBases(), loadDocuments(selectedKnowledgeBaseId)])
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setActiveDocumentId(null)
       setBusyState("idle")
     }
   }
@@ -210,7 +339,6 @@ export default function Home() {
                     value={selectedKnowledgeBaseId}
                     onChange={(event) => {
                       setSelectedKnowledgeBaseId(event.target.value)
-                      setDocument(null)
                       setResults([])
                       setHasRetrieved(false)
                     }}
@@ -274,8 +402,17 @@ export default function Home() {
                     id="pdf-file"
                     type="file"
                     accept="application/pdf,.pdf"
-                    onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+                    onChange={(event) => {
+                      const selected = event.target.files?.[0] ?? null
+                      setFile(selected)
+                      setError(selected ? validatePdf(selected) : null)
+                    }}
                   />
+                  {file ? (
+                    <p className="text-xs text-muted-foreground">
+                      {file.name} ({formatFileSize(file.size)})
+                    </p>
+                  ) : null}
                   <Button type="submit" className="w-full" disabled={isBusy || !file}>
                     {busyState === "uploading" ? (
                       <Loader2Icon className="animate-spin" aria-hidden="true" />
@@ -285,41 +422,119 @@ export default function Home() {
                     Upload and index
                   </Button>
                 </form>
-
-                {document ? (
-                  <div className="space-y-3 rounded-lg border p-3">
-                    <div className="flex items-start gap-2">
-                      <FileTextIcon className="mt-0.5 size-4 text-muted-foreground" aria-hidden="true" />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">{document.original_filename}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {document.chunk_count} chunks
-                          {document.page_count ? ` across ${document.page_count} pages` : ""}
-                        </p>
-                      </div>
-                      <StatusBadge status={document.status === "processed" ? "ready" : "failed"}>
-                        {document.status}
-                      </StatusBadge>
-                    </div>
-                    {document.error_message ? (
-                      <p className="text-xs leading-5 text-destructive">{document.error_message}</p>
-                    ) : (
-                      <div className="flex items-center gap-2 text-xs text-emerald-700">
-                        <CheckCircle2Icon className="size-4" aria-hidden="true" />
-                        Stored in pgvector and ready for retrieval.
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                    No indexed PDF yet.
-                  </div>
-                )}
               </CardContent>
             </Card>
           </div>
 
           <section className="space-y-6">
+            <Card className="rounded-lg shadow-none">
+              <CardHeader className="border-b pb-4">
+                <CardTitle>Documents</CardTitle>
+                <CardDescription>PDFs stored locally and indexed for the selected collection.</CardDescription>
+                <CardAction>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleRefreshDocuments}
+                    disabled={isBusy || !selectedKnowledgeBaseId}
+                  >
+                    {busyState === "refreshing" ? (
+                      <Loader2Icon className="animate-spin" aria-hidden="true" />
+                    ) : (
+                      <RefreshCwIcon aria-hidden="true" />
+                    )}
+                    Refresh
+                  </Button>
+                </CardAction>
+              </CardHeader>
+              <CardContent className="pt-4">
+                {documents.length === 0 ? (
+                  <div className="rounded-lg border border-dashed p-6 text-center">
+                    <FileTextIcon className="mx-auto size-5 text-muted-foreground" aria-hidden="true" />
+                    <p className="mt-2 text-sm font-medium">No documents in this knowledge base</p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Upload a text-based PDF to create chunks for retrieval.
+                    </p>
+                  </div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>File</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead className="text-right">Pages</TableHead>
+                        <TableHead className="text-right">Chunks</TableHead>
+                        <TableHead>Uploaded</TableHead>
+                        <TableHead>Processed</TableHead>
+                        <TableHead className="text-right">Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {documents.map((item) => (
+                        <TableRow key={item.id}>
+                          <TableCell className="max-w-[260px] whitespace-normal">
+                            <div className="flex min-w-0 items-start gap-2">
+                              <FileTextIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                              <div className="min-w-0">
+                                <p className="break-words font-medium">{item.original_filename}</p>
+                                {item.error_message ? (
+                                  <p className="mt-1 line-clamp-2 text-xs leading-5 text-destructive">
+                                    {item.error_message}
+                                  </p>
+                                ) : (
+                                  <p className="mt-1 text-xs text-muted-foreground">{item.mime_type}</p>
+                                )}
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <StatusBadge status={documentStatus(item.status)}>{item.status}</StatusBadge>
+                          </TableCell>
+                          <TableCell className="text-right">{item.page_count ?? "-"}</TableCell>
+                          <TableCell className="text-right">{item.chunk_count}</TableCell>
+                          <TableCell>{formatDate(item.created_at)}</TableCell>
+                          <TableCell>{formatDate(item.processed_at)}</TableCell>
+                          <TableCell>
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="icon"
+                                aria-label={`Reprocess ${item.original_filename}`}
+                                onClick={() => handleReprocessDocument(item.id)}
+                                disabled={isBusy}
+                              >
+                                {busyState === "reprocessing" && activeDocumentId === item.id ? (
+                                  <Loader2Icon className="animate-spin" aria-hidden="true" />
+                                ) : (
+                                  <RotateCcwIcon aria-hidden="true" />
+                                )}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="icon"
+                                aria-label={`Delete ${item.original_filename}`}
+                                onClick={() => handleDeleteDocument(item.id)}
+                                disabled={isBusy}
+                              >
+                                {busyState === "deleting" && activeDocumentId === item.id ? (
+                                  <Loader2Icon className="animate-spin" aria-hidden="true" />
+                                ) : (
+                                  <Trash2Icon aria-hidden="true" />
+                                )}
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </CardContent>
+            </Card>
+
             <Card className="rounded-lg shadow-none">
               <CardHeader className="border-b pb-4">
                 <CardTitle>Question</CardTitle>
@@ -369,8 +584,8 @@ export default function Home() {
                     </p>
                     <p className="mt-1 text-sm text-muted-foreground">
                       {hasRetrieved
-                        ? "This selected knowledge base has no indexed chunks yet. Upload a text-based PDF here, or choose a collection with chunks."
-                        : "Upload a text-based PDF, then submit a retrieval query."}
+                        ? "This knowledge base has no indexed chunks yet. Upload a text-based PDF here, or choose a collection with chunks."
+                        : "Upload a text-based PDF into this knowledge base, then submit a retrieval query."}
                     </p>
                   </div>
                 ) : (
@@ -411,4 +626,55 @@ export default function Home() {
 
 function errorMessage(caught: unknown) {
   return caught instanceof Error ? caught.message : "Something went wrong."
+}
+
+function validatePdf(file: File) {
+  if (!file.name.toLowerCase().endsWith(".pdf")) {
+    return "Choose a PDF file."
+  }
+
+  if (file.size === 0) {
+    return "Uploaded PDF cannot be empty."
+  }
+
+  if (file.size > MAX_UPLOAD_BYTES) {
+    return "Uploaded PDF must be 25 MB or smaller."
+  }
+
+  return null
+}
+
+function documentStatus(status: string) {
+  if (status === "processed") {
+    return "ready"
+  }
+
+  if (status === "processing") {
+    return "processing"
+  }
+
+  if (status === "failed") {
+    return "failed"
+  }
+
+  return "queued"
+}
+
+function formatDate(value: string | null) {
+  if (!value) {
+    return "-"
+  }
+
+  return new Intl.DateTimeFormat("en", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value))
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024 * 1024) {
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`
+  }
+
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
