@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 26_214_400
 
     cors_origins: str = "http://localhost:3000"
+    session_cookie_name: str = "knowledge_assistant_session"
+    session_lifetime_days: int = 7
+    session_cookie_secure: bool = False
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -65,9 +65,11 @@ import {
   listDocuments,
   reprocessDocument,
   retrieveChunks,
+  updateKnowledgeBase,
   uploadPdf,
 } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { AuthGate } from "@/features/auth/auth-gate"
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
@@ -81,8 +83,9 @@ type BusyState =
   | "deleting"
   | "deletingCollection"
   | "reprocessing"
+  | "updating"
 
-export default function Home() {
+function KnowledgeManagementPage() {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([])
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState("")
   const [knowledgeBaseName, setKnowledgeBaseName] = useState("Retrieval Lab")
@@ -359,6 +362,20 @@ export default function Home() {
     }
   }
 
+  async function handleToggleKnowledgeBase() {
+    if (!selectedKnowledgeBase) return
+    try {
+      setBusyState("updating")
+      setError(null)
+      const updated = await updateKnowledgeBase(selectedKnowledgeBase.id, { is_active: !selectedKnowledgeBase.is_active })
+      setKnowledgeBases((current) => current.map((item) => item.id === updated.id ? updated : item))
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setBusyState("idle")
+    }
+  }
+
   const isBusy = busyState !== "idle"
 
   return (
@@ -466,7 +483,13 @@ export default function Home() {
                         <p>
                           {selectedKnowledgeBase.document_count} documents, {selectedKnowledgeBase.chunk_count} chunks
                         </p>
+                        <Badge variant={selectedKnowledgeBase.is_active ? "secondary" : "outline"}>
+                          {selectedKnowledgeBase.is_active ? "Active for chat" : "Inactive"}
+                        </Badge>
                       </div>
+                      <Button type="button" variant="outline" size="sm" disabled={isBusy} onClick={() => void handleToggleKnowledgeBase()}>
+                        {selectedKnowledgeBase.is_active ? "Deactivate" : "Activate"}
+                      </Button>
                       <Button
                         type="button"
                         variant="destructive"
@@ -762,6 +785,10 @@ export default function Home() {
       </PageContainer>
     </main>
   )
+}
+
+export default function Home() {
+  return <AuthGate roles={["admin", "superadmin"]}><KnowledgeManagementPage /></AuthGate>
 }
 
 function errorMessage(caught: unknown) {

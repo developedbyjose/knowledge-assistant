@@ -16,8 +16,8 @@ class KnowledgeBaseService:
         self.session = session
         self.knowledge_bases = KnowledgeBaseRepository(session)
 
-    def list(self) -> list[KnowledgeBaseRead]:
-        return self.knowledge_bases.list()
+    def list(self, *, active_only: bool = False) -> list[KnowledgeBaseRead]:
+        return self.knowledge_bases.list(active_only=active_only)
 
     def get(self, knowledge_base_id: UUID) -> KnowledgeBaseRead:
         knowledge_base = self.knowledge_bases.get_with_counts(knowledge_base_id)
@@ -39,7 +39,7 @@ class KnowledgeBaseService:
         self,
         *,
         knowledge_base_id: UUID,
-        values: dict[str, str | None],
+        values: dict[str, str | bool | None],
     ) -> KnowledgeBaseRead:
         knowledge_base = self.get_required(knowledge_base_id)
         self.knowledge_bases.update(

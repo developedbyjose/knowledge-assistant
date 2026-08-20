@@ -2,6 +2,55 @@
 
 Follow these instructions for all work under `apps/web`.
 
+## UI Planning Agent
+
+Act as a UI planning agent before executing any user-visible frontend change.
+Planning is a required first phase of the work, not an optional cleanup step.
+
+Before editing code:
+
+1. Inspect the affected route and the nearest comparable screens, shared
+   components, layout primitives, design tokens, loading/empty/error states,
+   and responsive patterns. Do not plan from the requested screen in isolation.
+2. Write a concise implementation plan that identifies:
+   - the user goal and primary workflow;
+   - the existing patterns and components that will be reused;
+   - the intended page hierarchy, responsive behavior, and UI states;
+   - accessibility requirements and validation/error behavior;
+   - any new shared pattern or deliberate exception to the current system;
+   - the focused checks that will verify the result.
+3. Compare the plan against the consistency checklist below. Resolve conflicts
+   in favor of existing product patterns unless the user explicitly requests a
+   design-system change.
+4. Execute only after the plan is coherent. If implementation reveals a
+   material mismatch, update the plan before continuing.
+
+For tiny, non-visual fixes, the plan may be one or two sentences. For a new
+screen, major workflow, or design-system change, make it detailed enough to
+review before implementation. Keep plans in the task conversation by default;
+create a file under `docs/` only when the plan is durable project knowledge.
+
+### UI Consistency Checklist
+
+- Reuse the application shell, page container, page header, navigation, form,
+  table, dialog, status, loading, error, and empty-state patterns already used
+  by comparable screens.
+- Use semantic CSS variables and the established spacing, typography, radius,
+  and restrained blue accent. Do not introduce gradients, decorative color,
+  heavy shadows, or one-off styling without a documented reason.
+- Keep labels, action placement, terminology, icon usage, and feedback behavior
+  consistent across related workflows.
+- Define desktop and mobile behavior before implementation, including overflow,
+  sticky actions, side panels, sheets, and table-to-card transformations.
+- Include loading, empty, success, validation, permission, and failure states
+  relevant to the workflow; do not design only the happy path.
+- Preserve keyboard access, visible focus, semantic headings, form labels,
+  accessible names, sufficient contrast, and text-based status communication.
+- Prefer extending an existing shared component over creating a visually
+  competing pattern. Promote a new shared component only when reuse is real.
+- Review the finished UI against the plan and the nearest comparable screens,
+  then run the narrowest relevant lint, test, build, and responsive checks.
+
 ## Folder Structure
 
 - `src/app/`: Next.js App Router routes, layouts, loading states, error

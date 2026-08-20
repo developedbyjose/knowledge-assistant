@@ -1,8 +1,9 @@
-from typing import Annotated
+from typing import Annotated, Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Cookie, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.session import get_session
 from app.rag.ingestion.chunker import TextChunker
 from app.rag.ingestion.pdf_parser import PdfParser
@@ -10,12 +11,47 @@ from app.rag.providers.chat import ChatModel, ChatModelError
 from app.rag.providers.factory import create_chat_model, create_embedding_provider
 from app.rag.providers.embedding import EmbeddingProvider
 from app.services.answer_service import AnswerService
+from app.services.auth_service import AuthService
 from app.services.conversation_service import ConversationService
 from app.services.document_service import DocumentService
 from app.services.knowledge_base_service import KnowledgeBaseService
 from app.services.retrieval_service import RetrievalService
 
 SessionDep = Annotated[Session, Depends(get_session)]
+
+
+def get_auth_service(session: SessionDep) -> AuthService:
+    return AuthService(session)
+
+
+def get_current_user(
+    service: Annotated[AuthService, Depends(get_auth_service)],
+    session_token: Annotated[Optional[str], Cookie(alias=settings.session_cookie_name)] = None,
+):
+    if not session_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required.")
+    user = service.current_user(session_token)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required.")
+    return user
+
+
+def require_current_user(user=Depends(get_current_user)):  # noqa: ANN001, ANN201, B008
+    if user.must_change_password:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Password change required.")
+    return user
+
+
+def require_admin(user=Depends(require_current_user)):  # noqa: ANN001, ANN201, B008
+    if user.role not in {"admin", "superadmin"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
+    return user
+
+
+def require_superadmin(user=Depends(require_current_user)):  # noqa: ANN001, ANN201, B008
+    if user.role != "superadmin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Superadmin access required.")
+    return user
 
 
 def get_embedding_provider() -> EmbeddingProvider:

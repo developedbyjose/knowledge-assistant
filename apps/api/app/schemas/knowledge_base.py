@@ -17,6 +17,7 @@ class KnowledgeBaseCreate(BaseModel):
 class KnowledgeBaseUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     description: Optional[str] = None
+    is_active: Optional[bool] = None
 
 
 class KnowledgeBaseRead(BaseModel):
@@ -24,6 +25,7 @@ class KnowledgeBaseRead(BaseModel):
     name: str
     description: Optional[str]
     embedding_model: str
+    is_active: bool
     created_at: datetime
     document_count: int = 0
     chunk_count: int = 0

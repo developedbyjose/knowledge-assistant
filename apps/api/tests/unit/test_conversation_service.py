@@ -27,7 +27,7 @@ class FakeConversationRepository:
         self.conversation = conversation
         self.messages = conversation.messages
 
-    def get(self, conversation_id: UUID):  # noqa: ANN201
+    def get(self, conversation_id: UUID, *, user_id: UUID):  # noqa: ANN201
         if conversation_id != self.conversation.id:
             return None
         return self.conversation
@@ -68,7 +68,7 @@ class FakeConversationRepository:
         ]
         return message.citations
 
-    def get_message(self, message_id: UUID):  # noqa: ANN201
+    def get_message(self, message_id: UUID, *, user_id: UUID):  # noqa: ANN201
         return next((message for message in self.messages if message.id == message_id), None)
 
     def record_feedback(self, *, message, rating):  # noqa: ANN001, ANN201
@@ -108,14 +108,16 @@ class FakeChatModel:
 
 
 def _conversation():
+    user_id = uuid4()
     return SimpleNamespace(
         id=uuid4(),
-        user_id=None,
+        user_id=user_id,
         knowledge_base_id=uuid4(),
         title="New chat",
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
         messages=[],
+        knowledge_base=SimpleNamespace(is_active=True),
     )
 
 
@@ -149,7 +151,7 @@ def test_add_message_persists_user_and_assistant_messages() -> None:
     service, conversation, session = _service(chunks=[_result()])
 
     response = asyncio.run(
-        service.add_message(conversation_id=conversation.id, content="What changed?", limit=5)
+        service.add_message(conversation_id=conversation.id, user_id=conversation.user_id, content="What changed?", limit=5)
     )
 
     assert session.commits == 1
@@ -166,7 +168,7 @@ def test_add_message_skips_model_when_context_is_insufficient() -> None:
     service, conversation, _session = _service(chunks=[low_score], chat_model=chat_model)
 
     response = asyncio.run(
-        service.add_message(conversation_id=conversation.id, content="What changed?", limit=5)
+        service.add_message(conversation_id=conversation.id, user_id=conversation.user_id, content="What changed?", limit=5)
     )
 
     assert chat_model.generate_calls == []
@@ -183,6 +185,7 @@ def test_stream_message_emits_tokens_sources_and_done() -> None:
             event
             async for event in service.stream_message(
                 conversation_id=conversation.id,
+                user_id=conversation.user_id,
                 content="What changed?",
                 limit=5,
             )
@@ -209,7 +212,7 @@ def test_record_feedback_accepts_assistant_message() -> None:
         content="Grounded answer.",
     )
 
-    feedback = service.record_feedback(message_id=assistant_message.id, rating="positive")
+    feedback = service.record_feedback(message_id=assistant_message.id, user_id=conversation.user_id, rating="positive")
 
     assert session.commits == 1
     assert feedback.message_id == assistant_message.id
@@ -225,7 +228,7 @@ def test_record_feedback_rejects_user_message() -> None:
     )
 
     try:
-        service.record_feedback(message_id=user_message.id, rating="negative")
+        service.record_feedback(message_id=user_message.id, user_id=conversation.user_id, rating="negative")
     except ValueError as exc:
         assert "assistant messages" in str(exc)
     else:

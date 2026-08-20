@@ -39,7 +39,6 @@ import {
   KnowledgeBase,
   RetrievalResult,
   createConversation,
-  createKnowledgeBase,
   deleteConversation,
   listConversations,
   listKnowledgeBases,
@@ -47,6 +46,7 @@ import {
   streamConversationMessage,
 } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { AuthGate } from "@/features/auth/auth-gate"
 
 type BusyState = "loading" | "idle" | "creating" | "sending" | "refreshing"
 
@@ -60,7 +60,7 @@ const EMPTY_SOURCES: SourceState = {
   sourceChunks: [],
 }
 
-export default function ChatPage() {
+function ChatPageContent() {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([])
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState("")
   const [conversations, setConversations] = useState<Conversation[]>([])
@@ -115,14 +115,7 @@ export default function ChatPage() {
     setError(null)
 
     try {
-      let bases = await listKnowledgeBases()
-      if (bases.length === 0) {
-        const created = await createKnowledgeBase({
-          name: "Retrieval Lab",
-          description: "Default workspace for grounded chat.",
-        })
-        bases = [created]
-      }
+      const bases = (await listKnowledgeBases()).filter((knowledgeBase) => knowledgeBase.is_active)
 
       const chats = await listConversations()
       const selectedBaseId = selectedKnowledgeBaseId || bases[0]?.id || ""
@@ -147,7 +140,7 @@ export default function ChatPage() {
 
     async function loadInitialData() {
       try {
-        const bases = await ensureKnowledgeBases()
+        const bases = (await listKnowledgeBases()).filter((knowledgeBase) => knowledgeBase.is_active)
         const chats = await listConversations()
         if (!active) {
           return
@@ -379,7 +372,7 @@ export default function ChatPage() {
   const isSending = busyState === "sending"
 
   return (
-    <PageContainer size="wide" className="h-screen min-h-screen gap-4 py-4">
+    <PageContainer size="wide" className="h-[calc(100vh-3.5rem)] min-h-[calc(100vh-3.5rem)] gap-4 py-4">
       <PageHeader
         title="Chat"
         description="Ask grounded questions against indexed knowledge base documents."
@@ -503,7 +496,15 @@ export default function ChatPage() {
 
           <ScrollArea className="min-h-0 flex-1">
             <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4">
-              {!selectedConversation || selectedConversation.messages.length === 0 ? (
+              {knowledgeBases.length === 0 ? (
+                <div className="flex min-h-80 flex-col items-center justify-center rounded-lg border border-dashed p-8 text-center">
+                  <MessageSquareIcon className="size-8 text-muted-foreground" />
+                  <h3 className="mt-3 text-lg font-semibold">No knowledge base is available</h3>
+                  <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
+                    Contact an administrator to activate a knowledge base before starting a chat.
+                  </p>
+                </div>
+              ) : !selectedConversation || selectedConversation.messages.length === 0 ? (
                 <div className="flex min-h-80 flex-col items-center justify-center rounded-lg border border-dashed p-8 text-center">
                   <MessageSquareIcon className="size-8 text-muted-foreground" />
                   <h3 className="mt-3 text-lg font-semibold">Start a grounded conversation</h3>
@@ -577,6 +578,10 @@ export default function ChatPage() {
       </Dialog>
     </PageContainer>
   )
+}
+
+export default function ChatPage() {
+  return <AuthGate><ChatPageContent /></AuthGate>
 }
 
 function MessageBubble({
@@ -864,17 +869,4 @@ function latestAssistantMessageWithSources(
 
 function errorMessage(caught: unknown): string {
   return caught instanceof Error ? caught.message : "Something went wrong."
-}
-
-async function ensureKnowledgeBases(): Promise<KnowledgeBase[]> {
-  const bases = await listKnowledgeBases()
-  if (bases.length > 0) {
-    return bases
-  }
-
-  const created = await createKnowledgeBase({
-    name: "Retrieval Lab",
-    description: "Default workspace for grounded chat.",
-  })
-  return [created]
 }

@@ -15,7 +15,7 @@ class KnowledgeBaseRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def list(self) -> list[KnowledgeBaseRead]:
+    def list(self, *, active_only: bool = False) -> list[KnowledgeBaseRead]:
         statement = (
             select(
                 KnowledgeBase,
@@ -27,6 +27,8 @@ class KnowledgeBaseRepository:
             .group_by(KnowledgeBase.id)
             .order_by(KnowledgeBase.created_at.desc())
         )
+        if active_only:
+            statement = statement.where(KnowledgeBase.is_active.is_(True))
 
         return [
             KnowledgeBaseRead.model_validate(
@@ -91,12 +93,14 @@ class KnowledgeBaseRepository:
         self,
         knowledge_base: KnowledgeBase,
         *,
-        values: dict[str, str | None],
+        values: dict[str, str | bool | None],
     ) -> KnowledgeBase:
         if "name" in values:
             knowledge_base.name = values["name"]
         if "description" in values:
             knowledge_base.description = values["description"]
+        if "is_active" in values:
+            knowledge_base.is_active = values["is_active"]
         self.session.flush()
         return knowledge_base
 

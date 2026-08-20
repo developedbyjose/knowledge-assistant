@@ -3,7 +3,32 @@
 The product API supports retrieval validation and cited answer generation. All
 product endpoints are versioned under `/api/v1`.
 
+## Authentication and roles
+
+Browser authentication uses an opaque token in an HTTP-only, SameSite=Lax
+cookie. Only a SHA-256 hash of the token is stored in `auth_sessions`; sessions
+expire after seven days by default. Unsafe cookie-authenticated requests from
+an origin outside `CORS_ORIGINS` are rejected.
+
+- `POST /api/v1/auth/login` creates a session from `email` and `password`.
+- `POST /api/v1/auth/logout` revokes the session and clears its cookie.
+- `GET /api/v1/auth/me` returns the current account and role.
+- `POST /api/v1/auth/change-password` replaces a temporary password, revokes
+  prior sessions, and rotates the current session.
+- `GET/POST /api/v1/users`, `GET/PATCH /api/v1/users/{id}`, and
+  `POST /api/v1/users/{id}/reset-password` are superadmin-only.
+
+Health and login are public; all other product routes require authentication.
+Temporary-password accounts can access only auth endpoints. Normal users can
+use owner-scoped chat against active knowledge bases. Admins can also manage
+knowledge bases, PDFs, and retrieval operations. Superadmins additionally
+manage accounts. There is no public registration endpoint.
+
 ## Knowledge Bases
+
+Knowledge bases expose `is_active`. Normal users see active bases only. Admins
+can activate or deactivate bases; inactive bases preserve history but reject
+new conversations and messages.
 
 - `GET /api/v1/health` returns lightweight service status.
 - `GET /api/v1/knowledge-bases` lists retrieval collections.
@@ -85,6 +110,10 @@ failed chat-provider calls return `502`.
 Streaming events are `message_start`, `token`, `sources`, `message_done`, and
 `error`. Route handlers only format HTTP/SSE responses; retrieval, prompt
 assembly, generation, and persistence stay in the service layer.
+
+Conversations and feedback are owner-only for every role. Cross-user access
+returns `404`. Ownership and active-base validation run before SSE headers are
+sent, so denied streams return an ordinary HTTP error.
 
 ## Feedback
 

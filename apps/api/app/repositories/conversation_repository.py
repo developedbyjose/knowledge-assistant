@@ -34,23 +34,24 @@ class ConversationRepository:
         self.session.flush()
         return conversation
 
-    def list(self) -> list[Conversation]:
+    def list(self, *, user_id: UUID) -> list[Conversation]:
         statement = (
             select(Conversation)
             .options(_message_load_options())
+            .where(Conversation.user_id == user_id)
             .order_by(Conversation.updated_at.desc(), Conversation.created_at.desc())
         )
         return list(self.session.scalars(statement))
 
-    def get(self, conversation_id: UUID) -> Conversation | None:
+    def get(self, conversation_id: UUID, *, user_id: UUID) -> Conversation | None:
         statement = (
             select(Conversation)
             .options(_message_load_options())
-            .where(Conversation.id == conversation_id)
+            .where(Conversation.id == conversation_id, Conversation.user_id == user_id)
         )
         return self.session.scalars(statement).one_or_none()
 
-    def get_message(self, message_id: UUID) -> Message | None:
+    def get_message(self, message_id: UUID, *, user_id: UUID) -> Message | None:
         statement = (
             select(Message)
             .options(
@@ -59,7 +60,8 @@ class ConversationRepository:
                 .selectinload(DocumentChunk.document),
                 selectinload(Message.feedback),
             )
-            .where(Message.id == message_id)
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(Message.id == message_id, Conversation.user_id == user_id)
         )
         return self.session.scalars(statement).one_or_none()
 

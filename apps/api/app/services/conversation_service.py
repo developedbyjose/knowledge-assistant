@@ -44,26 +44,30 @@ class ConversationService:
         self.conversations = ConversationRepository(session)
         self.knowledge_bases = KnowledgeBaseRepository(session)
 
-    def create(self, *, knowledge_base_id: UUID, title: str | None) -> ConversationRead:
-        if self.knowledge_bases.get(knowledge_base_id) is None:
+    def create(self, *, user_id: UUID, knowledge_base_id: UUID, title: str | None) -> ConversationRead:
+        knowledge_base = self.knowledge_bases.get(knowledge_base_id)
+        if knowledge_base is None:
             raise LookupError("Knowledge base not found.")
+        if not knowledge_base.is_active:
+            raise ValueError("This knowledge base is inactive.")
         conversation = self.conversations.create(
             knowledge_base_id=knowledge_base_id,
             title=_conversation_title(title),
+            user_id=user_id,
         )
         self.session.commit()
         self.session.refresh(conversation)
         return _conversation_read(conversation)
 
-    def list(self) -> list[ConversationRead]:
-        return [_conversation_read(conversation) for conversation in self.conversations.list()]
+    def list(self, *, user_id: UUID) -> list[ConversationRead]:
+        return [_conversation_read(conversation) for conversation in self.conversations.list(user_id=user_id)]
 
-    def get(self, conversation_id: UUID) -> ConversationRead:
-        conversation = self._get_required(conversation_id)
+    def get(self, conversation_id: UUID, *, user_id: UUID) -> ConversationRead:
+        conversation = self._get_required(conversation_id, user_id=user_id)
         return _conversation_read(conversation)
 
-    def delete(self, conversation_id: UUID) -> None:
-        conversation = self._get_required(conversation_id)
+    def delete(self, conversation_id: UUID, *, user_id: UUID) -> None:
+        conversation = self._get_required(conversation_id, user_id=user_id)
         self.conversations.delete(conversation)
         self.session.commit()
 
@@ -71,10 +75,11 @@ class ConversationService:
         self,
         *,
         conversation_id: UUID,
+        user_id: UUID,
         content: str,
         limit: int,
     ) -> ConversationMessageResponse:
-        conversation = self._get_required(conversation_id)
+        conversation = self.authorize_message(conversation_id=conversation_id, user_id=user_id)
         user_message = self.conversations.add_message(
             conversation=conversation,
             role="user",
@@ -103,7 +108,7 @@ class ConversationService:
             source_chunks=source_chunks,
         )
         self.session.commit()
-        persisted = self._get_required(conversation_id)
+        persisted = self._get_required(conversation_id, user_id=user_id)
 
         return ConversationMessageResponse(
             conversation=_conversation_read(persisted),
@@ -121,11 +126,12 @@ class ConversationService:
         self,
         *,
         conversation_id: UUID,
+        user_id: UUID,
         content: str,
         limit: int,
     ) -> AsyncIterator[dict[str, Any]]:
         try:
-            conversation = self._get_required(conversation_id)
+            conversation = self.authorize_message(conversation_id=conversation_id, user_id=user_id)
             user_message = self.conversations.add_message(
                 conversation=conversation,
                 role="user",
@@ -167,7 +173,7 @@ class ConversationService:
                 source_chunks=source_chunks,
             )
             self.session.commit()
-            persisted = self._get_required(conversation_id)
+            persisted = self._get_required(conversation_id, user_id=user_id)
             yield {
                 "event": "sources",
                 "data": {
@@ -190,8 +196,8 @@ class ConversationService:
             self.session.rollback()
             yield {"event": "error", "data": {"detail": str(exc)}}
 
-    def record_feedback(self, *, message_id: UUID, rating: str) -> MessageFeedbackRead:
-        message = self.conversations.get_message(message_id)
+    def record_feedback(self, *, message_id: UUID, user_id: UUID, rating: str) -> MessageFeedbackRead:
+        message = self.conversations.get_message(message_id, user_id=user_id)
         if message is None:
             raise LookupError("Message not found.")
         if message.role != "assistant":
@@ -200,8 +206,14 @@ class ConversationService:
         self.session.commit()
         return MessageFeedbackRead.model_validate(feedback, from_attributes=True)
 
-    def _get_required(self, conversation_id: UUID) -> Conversation:
-        conversation = self.conversations.get(conversation_id)
+    def authorize_message(self, *, conversation_id: UUID, user_id: UUID) -> Conversation:
+        conversation = self._get_required(conversation_id, user_id=user_id)
+        if not conversation.knowledge_base.is_active:
+            raise ValueError("This knowledge base is inactive.")
+        return conversation
+
+    def _get_required(self, conversation_id: UUID, *, user_id: UUID) -> Conversation:
+        conversation = self.conversations.get(conversation_id, user_id=user_id)
         if conversation is None:
             raise LookupError("Conversation not found.")
         return conversation

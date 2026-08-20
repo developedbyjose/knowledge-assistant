@@ -47,6 +47,9 @@ services:
       EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
       RETRIEVAL_MIN_SIMILARITY_SCORE: 0.05
       CORS_ORIGINS: http://localhost:3000
+      SESSION_COOKIE_NAME: knowledge_assistant_session
+      SESSION_LIFETIME_DAYS: 7
+      SESSION_COOKIE_SECURE: "false"
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "1"
       MKL_NUM_THREADS: "1"

@@ -19,7 +19,12 @@ class Conversation(Base):
         primary_key=True,
         default=uuid4,
     )
-    user_id: Mapped[Optional[UUID]] = mapped_column(PostgresUUID(as_uuid=True), nullable=True, index=True)
+    user_id: Mapped[Optional[UUID]] = mapped_column(
+        PostgresUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     knowledge_base_id: Mapped[UUID] = mapped_column(
         PostgresUUID(as_uuid=True),
         ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
@@ -40,6 +45,7 @@ class Conversation(Base):
     )
 
     knowledge_base = relationship("KnowledgeBase", back_populates="conversations")
+    user = relationship("User", back_populates="conversations")
     messages = relationship(
         "Message",
         back_populates="conversation",

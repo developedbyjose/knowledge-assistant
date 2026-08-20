@@ -5,9 +5,33 @@ export type KnowledgeBase = {
   name: string
   description: string | null
   embedding_model: string
+  is_active: boolean
   created_at: string
   document_count: number
   chunk_count: number
+}
+
+export type UserRole = "superadmin" | "admin" | "user"
+
+export type AuthUser = {
+  id: string
+  email: string
+  display_name: string
+  role: UserRole
+  is_active: boolean
+  must_change_password: boolean
+  created_at: string
+  updated_at: string
+  last_login_at: string | null
+}
+
+export type LoginResponse = { user: AuthUser; must_change_password: boolean }
+
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message)
+    this.name = "ApiError"
+  }
 }
 
 export type UploadedDocument = {
@@ -149,6 +173,7 @@ export async function updateKnowledgeBase(
   payload: {
     name?: string
     description?: string | null
+    is_active?: boolean
   }
 ): Promise<KnowledgeBase> {
   return apiFetch(`/knowledge-bases/${id}`, {
@@ -267,11 +292,12 @@ export async function streamConversationMessage(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ content, limit, stream: true }),
+    credentials: "include",
   })
 
   if (!response.ok || !response.body) {
     const fallback = `Request failed with status ${response.status}`
-    throw new Error(await responseDetail(response, fallback))
+    throw new ApiError(await responseDetail(response, fallback), response.status)
   }
 
   const reader = response.body.getReader()
@@ -320,21 +346,81 @@ export async function recordMessageFeedback(
   })
 }
 
+export async function login(email: string, password: string): Promise<LoginResponse> {
+  return apiFetch("/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  })
+}
+
+export async function logout(): Promise<void> {
+  await apiFetchNoContent("/auth/logout", { method: "POST" })
+}
+
+export async function getMe(): Promise<AuthUser> {
+  return apiFetch("/auth/me")
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<LoginResponse> {
+  return apiFetch("/auth/change-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  })
+}
+
+export async function listUsers(): Promise<AuthUser[]> {
+  return apiFetch("/users")
+}
+
+export async function createUser(payload: {
+  email: string
+  display_name: string
+  role: UserRole
+  temporary_password: string
+}): Promise<AuthUser> {
+  return apiFetch("/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function updateUser(
+  id: string,
+  payload: { display_name?: string; role?: UserRole; is_active?: boolean }
+): Promise<AuthUser> {
+  return apiFetch(`/users/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function resetUserPassword(id: string, temporaryPassword: string): Promise<AuthUser> {
+  return apiFetch(`/users/${id}/reset-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ temporary_password: temporaryPassword }),
+  })
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, init)
+  const response = await fetch(`${API_BASE_URL}${path}`, { ...init, credentials: "include" })
   if (!response.ok) {
     const fallback = `Request failed with status ${response.status}`
-    throw new Error(await responseDetail(response, fallback))
+    throw new ApiError(await responseDetail(response, fallback), response.status)
   }
 
   return response.json()
 }
 
 async function apiFetchNoContent(path: string, init?: RequestInit): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}${path}`, init)
+  const response = await fetch(`${API_BASE_URL}${path}`, { ...init, credentials: "include" })
   if (!response.ok) {
     const fallback = `Request failed with status ${response.status}`
-    throw new Error(await responseDetail(response, fallback))
+    throw new ApiError(await responseDetail(response, fallback), response.status)
   }
 }
 

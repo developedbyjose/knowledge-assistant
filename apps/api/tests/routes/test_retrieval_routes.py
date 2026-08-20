@@ -1,10 +1,13 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
+import pytest
 
 from app.api.v1.dependencies import (
     get_conversation_service,
+    get_current_user,
     get_document_service,
     get_answer_service,
     get_knowledge_base_service,
@@ -20,10 +23,31 @@ from app.schemas.retrieval import AnswerCitation, CitedAnswer, DocumentUploadRea
 MISSING_ID = UUID("00000000-0000-0000-0000-000000000404")
 PROCESSED_ID = UUID("00000000-0000-0000-0000-000000000101")
 FAILED_ID = UUID("00000000-0000-0000-0000-000000000202")
+AUTH_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
+AUTH_USER = SimpleNamespace(
+    id=AUTH_USER_ID,
+    email="admin@example.com",
+    display_name="Test Admin",
+    role="superadmin",
+    is_active=True,
+    must_change_password=False,
+)
+
+
+def reset_overrides() -> None:
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_current_user] = lambda: AUTH_USER
+
+
+@pytest.fixture(autouse=True)
+def authenticated_route_test():  # noqa: ANN201
+    reset_overrides()
+    yield
+    app.dependency_overrides.clear()
 
 
 class FakeKnowledgeBaseService:
-    def list(self):  # noqa: ANN201
+    def list(self, *, active_only=False):  # noqa: ANN001, ANN201
         return []
 
     def get(self, knowledge_base_id):  # noqa: ANN001, ANN201
@@ -53,6 +77,7 @@ class FakeKnowledgeBaseService:
             name=name,
             description=description,
             embedding_model="sentence-transformers/all-MiniLM-L6-v2",
+            is_active=True,
             created_at="2026-08-01T00:00:00Z",
             document_count=1,
             chunk_count=2,
@@ -207,17 +232,17 @@ class FakeConversationService:
         self.user_message_id = uuid4()
         self.assistant_message_id = uuid4()
 
-    def create(self, *, knowledge_base_id, title):  # noqa: ANN001, ANN201
+    def create(self, *, user_id, knowledge_base_id, title):  # noqa: ANN001, ANN201
         if self.error:
             raise self.error
         if knowledge_base_id == MISSING_ID:
             raise LookupError("Knowledge base not found.")
         return self._conversation(knowledge_base_id=knowledge_base_id, title=title or "New chat")
 
-    def list(self):  # noqa: ANN201
+    def list(self, *, user_id):  # noqa: ANN001, ANN201
         return [self._conversation()]
 
-    def get(self, conversation_id):  # noqa: ANN001, ANN201
+    def get(self, conversation_id, *, user_id):  # noqa: ANN001, ANN201
         if conversation_id == MISSING_ID:
             raise LookupError("Conversation not found.")
         return self._conversation(
@@ -233,11 +258,11 @@ class FakeConversationService:
             ],
         )
 
-    def delete(self, conversation_id):  # noqa: ANN001, ANN201
+    def delete(self, conversation_id, *, user_id):  # noqa: ANN001, ANN201
         if conversation_id == MISSING_ID:
             raise LookupError("Conversation not found.")
 
-    async def add_message(self, *, conversation_id, content, limit):  # noqa: ANN001, ANN201
+    async def add_message(self, *, conversation_id, user_id, content, limit):  # noqa: ANN001, ANN201
         if self.error:
             raise self.error
         if conversation_id == MISSING_ID:
@@ -281,7 +306,7 @@ class FakeConversationService:
             ],
         )
 
-    async def stream_message(self, *, conversation_id, content, limit):  # noqa: ANN001, ANN201
+    async def stream_message(self, *, conversation_id, user_id, content, limit):  # noqa: ANN001, ANN201
         user_message = self._message(conversation_id=conversation_id, role="user", content=content)
         assistant_message = self._message(
             conversation_id=conversation_id,
@@ -310,7 +335,11 @@ class FakeConversationService:
             },
         }
 
-    def record_feedback(self, *, message_id, rating):  # noqa: ANN001, ANN201
+    def authorize_message(self, *, conversation_id, user_id):  # noqa: ANN001, ANN201
+        if conversation_id == MISSING_ID:
+            raise LookupError("Conversation not found.")
+
+    def record_feedback(self, *, message_id, user_id, rating):  # noqa: ANN001, ANN201
         if message_id == MISSING_ID:
             raise LookupError("Message not found.")
         if message_id == UUID("00000000-0000-0000-0000-000000000400"):
@@ -325,7 +354,7 @@ class FakeConversationService:
     def _conversation(self, *, id=None, knowledge_base_id=None, title="New chat", messages=None):  # noqa: A002, ANN001, ANN201
         return ConversationRead(
             id=id or self.conversation_id,
-            user_id=None,
+            user_id=AUTH_USER_ID,
             knowledge_base_id=knowledge_base_id or self.knowledge_base_id,
             title=title,
             created_at=datetime.now(timezone.utc),
@@ -383,7 +412,7 @@ def test_rejects_non_pdf_upload() -> None:
         files={"file": ("sample.txt", b"hello", "text/plain")},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 400
 
 
@@ -396,7 +425,7 @@ def test_rejects_empty_pdf_upload() -> None:
         files={"file": ("sample.pdf", b"", "application/pdf")},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 400
     assert response.json()["detail"] == "Uploaded PDF cannot be empty."
 
@@ -410,7 +439,7 @@ def test_rejects_oversized_pdf_upload() -> None:
         files={"file": ("sample.pdf", b"%PDF-" + (b"0" * 26_214_401), "application/pdf")},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 400
     assert response.json()["detail"] == "Uploaded PDF must be 25 MB or smaller."
 
@@ -424,7 +453,7 @@ def test_rejects_invalid_pdf_signature() -> None:
         files={"file": ("sample.pdf", b"not a pdf", "application/pdf")},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 400
     assert response.json()["detail"] == "Uploaded file does not appear to be a valid PDF."
 
@@ -438,7 +467,7 @@ def test_upload_pdf_returns_document_status() -> None:
         files={"file": ("sample.pdf", b"%PDF-1.4", "application/pdf")},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 200
     assert response.json()["status"] == "processed"
 
@@ -452,7 +481,7 @@ def test_upload_missing_knowledge_base_returns_404() -> None:
         files={"file": ("sample.pdf", b"%PDF-1.4", "application/pdf")},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 404
 
 
@@ -465,7 +494,7 @@ def test_query_embedding_returns_ranked_chunks() -> None:
         json={"question": "What is this about?", "limit": 5},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 200
     body = response.json()
     assert body["results"][0]["rank"] == 1
@@ -481,7 +510,7 @@ def test_retrieval_query_alias_still_returns_chunks() -> None:
         json={"question": "What is this about?", "limit": 5},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 200
     assert response.json()["results"][0]["filename"] == "retrieval-baseline.pdf"
 
@@ -495,7 +524,7 @@ def test_query_embedding_validates_payload() -> None:
         json={"question": "", "limit": 21},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 422
 
 
@@ -508,7 +537,7 @@ def test_query_embedding_missing_knowledge_base_returns_404() -> None:
         json={"question": "What is this about?", "limit": 5},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 404
 
 
@@ -521,7 +550,7 @@ def test_answer_question_returns_cited_answer() -> None:
         json={"question": "How are chunks ranked?", "limit": 5},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 200
     body = response.json()
     assert body["question"] == "How are chunks ranked?"
@@ -540,7 +569,7 @@ def test_answer_question_validates_payload() -> None:
         json={"question": "", "limit": 21},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 422
 
 
@@ -553,7 +582,7 @@ def test_answer_question_missing_knowledge_base_returns_404() -> None:
         json={"question": "How are chunks ranked?", "limit": 5},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 404
 
 
@@ -568,7 +597,7 @@ def test_answer_question_retrieval_config_error_returns_400() -> None:
         json={"question": "How are chunks ranked?", "limit": 5},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 400
 
 
@@ -583,7 +612,7 @@ def test_answer_question_provider_error_returns_502() -> None:
         json={"question": "How are chunks ranked?", "limit": 5},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 502
     assert response.json()["detail"] == "Gemini API key is not configured."
 
@@ -597,7 +626,7 @@ def test_create_knowledge_base_route() -> None:
         json={"name": "Retrieval Lab", "description": "Test"},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 201
     assert response.json()["name"] == "Retrieval Lab"
 
@@ -609,7 +638,7 @@ def test_get_knowledge_base_route() -> None:
 
     response = client.get(f"/api/v1/knowledge-bases/{knowledge_base_id}")
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 200
     assert response.json()["id"] == str(knowledge_base_id)
     assert response.json()["document_count"] == 1
@@ -624,7 +653,7 @@ def test_update_knowledge_base_route() -> None:
         json={"name": "Updated", "description": None},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 200
     assert response.json()["name"] == "Updated"
     assert response.json()["description"] is None
@@ -636,7 +665,7 @@ def test_rejects_empty_knowledge_base_update() -> None:
 
     response = client.patch(f"/api/v1/knowledge-bases/{uuid4()}", json={})
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 400
 
 
@@ -646,7 +675,7 @@ def test_delete_knowledge_base_route() -> None:
 
     response = client.delete(f"/api/v1/knowledge-bases/{uuid4()}")
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 204
     assert response.content == b""
 
@@ -657,7 +686,7 @@ def test_missing_knowledge_base_returns_404() -> None:
 
     response = client.get(f"/api/v1/knowledge-bases/{MISSING_ID}")
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 404
 
 
@@ -667,7 +696,7 @@ def test_list_documents_route() -> None:
 
     response = client.get(f"/api/v1/knowledge-bases/{uuid4()}/documents")
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 200
     assert response.json()[0]["chunk_count"] == 2
 
@@ -679,7 +708,7 @@ def test_get_document_route() -> None:
 
     response = client.get(f"/api/v1/documents/{document_id}")
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 200
     assert response.json()["id"] == str(document_id)
 
@@ -690,7 +719,7 @@ def test_delete_document_route() -> None:
 
     response = client.delete(f"/api/v1/documents/{uuid4()}")
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 204
     assert response.content == b""
 
@@ -701,7 +730,7 @@ def test_reprocess_document_route() -> None:
 
     response = client.post(f"/api/v1/documents/{PROCESSED_ID}/reprocess")
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 200
     assert response.json()["status"] == "processed"
 
@@ -712,7 +741,7 @@ def test_reprocess_document_can_return_failed_status() -> None:
 
     response = client.post(f"/api/v1/documents/{FAILED_ID}/reprocess")
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 200
     assert response.json()["status"] == "failed"
     assert response.json()["error_message"] == "Stored document file not found."
@@ -724,7 +753,7 @@ def test_missing_document_returns_404() -> None:
 
     response = client.get(f"/api/v1/documents/{MISSING_ID}")
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 404
 
 
@@ -738,7 +767,7 @@ def test_create_conversation_route() -> None:
         json={"knowledge_base_id": str(knowledge_base_id), "title": "Policy chat"},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 201
     assert response.json()["knowledge_base_id"] == str(knowledge_base_id)
     assert response.json()["title"] == "Policy chat"
@@ -750,7 +779,7 @@ def test_list_conversations_route() -> None:
 
     response = client.get("/api/v1/conversations")
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 200
     assert response.json()[0]["title"] == "New chat"
 
@@ -762,7 +791,7 @@ def test_get_conversation_route() -> None:
 
     response = client.get(f"/api/v1/conversations/{conversation_id}")
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 200
     assert response.json()["id"] == str(conversation_id)
     assert response.json()["messages"][0]["source_chunks"][0]["filename"] == "policy.pdf"
@@ -774,7 +803,7 @@ def test_delete_conversation_route() -> None:
 
     response = client.delete(f"/api/v1/conversations/{uuid4()}")
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 204
     assert response.content == b""
 
@@ -785,7 +814,7 @@ def test_delete_missing_conversation_returns_404() -> None:
 
     response = client.delete(f"/api/v1/conversations/{MISSING_ID}")
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 404
 
 
@@ -799,7 +828,7 @@ def test_create_conversation_message_route() -> None:
         json={"content": "What changed?", "limit": 5},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 200
     body = response.json()
     assert body["user_message"]["content"] == "What changed?"
@@ -817,13 +846,28 @@ def test_create_conversation_message_sse_route() -> None:
         json={"content": "What changed?", "limit": 5, "stream": True},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert "event: message_start" in response.text
     assert "event: token" in response.text
     assert "event: sources" in response.text
     assert "event: message_done" in response.text
+
+
+def test_sse_authorization_fails_before_stream_headers() -> None:
+    app.dependency_overrides[get_conversation_service] = lambda: FakeConversationService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/conversations/{MISSING_ID}/messages",
+        headers={"Accept": "text/event-stream"},
+        json={"content": "What changed?", "stream": True},
+    )
+
+    reset_overrides()
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("application/json")
 
 
 def test_record_message_feedback_route() -> None:
@@ -836,7 +880,7 @@ def test_record_message_feedback_route() -> None:
         json={"rating": "positive"},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 200
     assert response.json()["message_id"] == str(message_id)
     assert response.json()["rating"] == "positive"
@@ -851,7 +895,7 @@ def test_record_message_feedback_missing_message_returns_404() -> None:
         json={"rating": "negative"},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 404
 
 
@@ -864,7 +908,7 @@ def test_record_message_feedback_rejects_non_assistant_message() -> None:
         json={"rating": "negative"},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 400
 
 
@@ -877,7 +921,7 @@ def test_record_message_feedback_validates_rating() -> None:
         json={"rating": "mixed"},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 422
 
 
@@ -890,7 +934,7 @@ def test_create_conversation_missing_knowledge_base_returns_404() -> None:
         json={"knowledge_base_id": str(MISSING_ID), "title": "Policy chat"},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 404
 
 
@@ -905,5 +949,5 @@ def test_create_conversation_message_provider_error_returns_502() -> None:
         json={"content": "What changed?", "limit": 5},
     )
 
-    app.dependency_overrides.clear()
+    reset_overrides()
     assert response.status_code == 502
