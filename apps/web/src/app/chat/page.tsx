@@ -30,6 +30,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   AnswerCitation,
@@ -409,25 +416,38 @@ function ChatPageContent() {
             <label htmlFor="knowledge-base" className="text-sm font-medium">
               Knowledge base
             </label>
-            <select
-              id="knowledge-base"
+            <Select
               value={selectedKnowledgeBaseId}
-              onChange={(event) => {
-                setSelectedKnowledgeBaseId(event.target.value)
+              onValueChange={(value) => {
+                if (value === null) {
+                  return
+                }
+
+                setSelectedKnowledgeBaseId(value)
                 const nextConversation = conversations.find(
-                  (conversation) => conversation.knowledge_base_id === event.target.value
+                  (conversation) => conversation.knowledge_base_id === value
                 )
                 setSelectedConversationId(nextConversation?.id ?? "")
                 setSelectedSourceMessageId("")
               }}
-              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              disabled={busyState === "loading" || knowledgeBases.length === 0}
             >
-              {knowledgeBases.map((knowledgeBase) => (
-                <option key={knowledgeBase.id} value={knowledgeBase.id}>
-                  {knowledgeBase.name}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger id="knowledge-base" className="h-10">
+                <SelectValue placeholder="Select knowledge base">
+                  {(value) =>
+                    knowledgeBases.find((knowledgeBase) => knowledgeBase.id === value)?.name ??
+                    "Select knowledge base"
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {knowledgeBases.map((knowledgeBase) => (
+                  <SelectItem key={knowledgeBase.id} value={knowledgeBase.id}>
+                    {knowledgeBase.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <ScrollArea className="min-h-0 flex-1">

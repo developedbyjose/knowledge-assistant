@@ -8,10 +8,10 @@ from app.api.v1.dependencies import get_auth_service, get_current_user, get_know
 from app.main import app
 
 
-def user(*, role="user", must_change_password=False):  # noqa: ANN001, ANN201
+def user(*, role="user", must_change_password=False, email="person@example.com"):  # noqa: ANN001, ANN201
     now = datetime.now(timezone.utc)
     return SimpleNamespace(
-        id=uuid4(), email="person@example.com", display_name="Person", role=role,
+        id=uuid4(), email=email, display_name="Person", role=role,
         is_active=True, must_change_password=must_change_password,
         created_at=now, updated_at=now, last_login_at=None,
     )
@@ -33,6 +33,9 @@ class FakeAuthService:
 
     def logout(self, token):  # noqa: ANN001, ANN201
         self.logged_out = True
+
+    def list_users(self):  # noqa: ANN201
+        return [self.user]
 
 
 class FakeKnowledgeBases:
@@ -99,3 +102,19 @@ def test_cookie_authenticated_cross_origin_write_is_rejected() -> None:
 
     assert response.status_code == 403
     assert service.logged_out is False
+
+
+def test_superadmin_can_list_legacy_account_with_non_email_identifier() -> None:
+    superadmin = user(role="superadmin", email="superadmin")
+    service = FakeAuthService(current=superadmin)
+    app.dependency_overrides[get_current_user] = lambda: superadmin
+    app.dependency_overrides[get_auth_service] = lambda: service
+
+    response = TestClient(app).get(
+        "/api/v1/users",
+        headers={"Origin": "http://localhost:3000"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()[0]["email"] == "superadmin"
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"

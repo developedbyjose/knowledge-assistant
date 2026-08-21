@@ -19,9 +19,9 @@ export function AppHeader() {
       <div className="mx-auto flex h-14 max-w-[1600px] items-center gap-4 px-4 sm:px-6">
         <Link href={isAdmin ? "/" : "/chat"} className="font-semibold tracking-tight">Knowledge Assistant</Link>
         <nav className="flex flex-1 items-center gap-1" aria-label="Primary navigation">
-          <Button variant="ghost" size="sm" render={<Link href="/chat" />}><MessageSquareIcon className="size-4" />Chat</Button>
-          {isAdmin ? <Button variant="ghost" size="sm" render={<Link href="/" />}><BookOpenIcon className="size-4" />Knowledge</Button> : null}
-          {user.role === "superadmin" ? <Button variant="ghost" size="sm" render={<Link href="/users" />}><UsersIcon className="size-4" />Users</Button> : null}
+          <Button variant="ghost" size="sm" nativeButton={false} render={<Link href="/chat" />}><MessageSquareIcon className="size-4" />Chat</Button>
+          {isAdmin ? <Button variant="ghost" size="sm" nativeButton={false} render={<Link href="/" />}><BookOpenIcon className="size-4" />Knowledge</Button> : null}
+          {user.role === "superadmin" ? <Button variant="ghost" size="sm" nativeButton={false} render={<Link href="/users" />}><UsersIcon className="size-4" />Users</Button> : null}
         </nav>
         <div className="hidden text-right sm:block">
           <p className="text-sm font-medium leading-none">{user.display_name}</p>

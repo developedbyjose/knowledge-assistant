@@ -40,8 +40,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const current = await getMe()
         if (active) setUser(current)
-      } catch (error) {
-        if (!(error instanceof ApiError && error.status === 401)) throw error
+      } catch {
+        // Session bootstrap is best-effort. A 401 means there is no session,
+        // while a network failure can happen briefly as the API starts. In
+        // either case, fail closed without turning the background effect into
+        // an unhandled promise rejection on the login page.
+        if (active) setUser(null)
       } finally {
         if (active) setLoading(false)
       }

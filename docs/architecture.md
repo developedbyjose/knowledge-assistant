@@ -73,6 +73,11 @@ origins in `CORS_ORIGINS`. PDF remains the only supported ingestion format.
 
 ## Developer Operations
 
+Docker Compose health-checks the FastAPI `/health` endpoint and starts the web
+service only after the API is ready. The frontend still treats current-session
+bootstrap as best-effort and fails closed as signed out if the API becomes
+temporarily unreachable, so a transient backend outage does not crash `/login`.
+
 See [Running and Accessing the Database](database.md) for the essential Docker
 Compose commands, migrations, PostgreSQL access, connection settings, and local
 troubleshooting.

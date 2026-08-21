@@ -11,7 +11,9 @@ UserRole = Literal["superadmin", "admin", "user"]
 
 class UserRead(BaseModel):
     id: UUID
-    email: EmailStr
+    # Keep reads compatible with accounts created before email validation was
+    # enforced. UserCreate still validates all newly stored email addresses.
+    email: str
     display_name: str
     role: UserRole
     is_active: bool

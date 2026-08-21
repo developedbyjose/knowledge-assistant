@@ -16,4 +16,7 @@ out/
 build/
 coverage/
 
+# Graphify generated artifacts
+graphify-out/
+
 *.log

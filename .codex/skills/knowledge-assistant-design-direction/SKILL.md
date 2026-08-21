@@ -142,6 +142,8 @@ Avoid:
 
 Create shared application components instead of repeatedly styling raw shadcn components at call sites. Keep wrappers thin, predictable, and aligned with the product layout patterns.
 
+For dropdown controls, use the shared `Select` primitive from `@/components/ui/select` with `SelectTrigger`, `SelectValue`, `SelectContent`, and `SelectItem`. Do not use a raw HTML `<select>` for application dropdowns. Preserve an associated label by matching its `htmlFor` to the `SelectTrigger` `id`, and provide an appropriate placeholder plus disabled states for loading or unavailable options.
+
 Recommended shared components:
 
 - `PageHeader`
