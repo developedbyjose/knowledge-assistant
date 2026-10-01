@@ -21,7 +21,7 @@ an origin outside `CORS_ORIGINS` are rejected.
 Health and login are public; all other product routes require authentication.
 Temporary-password accounts can access only auth endpoints. Normal users can
 use owner-scoped chat against active knowledge bases. Admins can also manage
-knowledge bases, PDFs, and retrieval operations. Superadmins additionally
+knowledge bases, documents, and retrieval operations. Superadmins additionally
 manage accounts. There is no public registration endpoint.
 
 ## Knowledge Bases
@@ -42,18 +42,32 @@ new conversations and messages.
 
 ## Documents
 
-- `POST /api/v1/knowledge-bases/{id}/documents` accepts one PDF as multipart
-  field `file`, extracts text, chunks it, embeds it, and stores chunks in
-  pgvector synchronously. Uploads are stored under `UPLOAD_DIR`, must use a PDF
-  filename/content type, cannot be empty, must start with a PDF signature, and
-  are capped by `MAX_UPLOAD_BYTES` (`26214400` by default).
+- `POST /api/v1/knowledge-bases/{id}/documents` accepts one text-based PDF or
+  DOCX as multipart field `file`, extracts text, chunks it, embeds it, and
+  stores chunks in pgvector synchronously. Uploads are stored under
+  `UPLOAD_DIR`, cannot be empty, and are capped by `MAX_UPLOAD_BYTES`
+  (`26214400` by default). PDF signatures and DOCX Office ZIP structure must
+  match the filename and declared MIME type; generic `application/octet-stream`
+  is accepted only when those checks pass. Encrypted and corrupt DOCX archives
+  are rejected, and their total expanded size is capped by
+  `MAX_DOCX_UNCOMPRESSED_BYTES` (`104857600` by default).
 - `GET /api/v1/knowledge-bases/{id}/documents` lists documents in a collection.
 - `GET /api/v1/documents/{id}` returns one document with status, page count, and
   chunk count.
+- `GET /api/v1/documents/{id}/content` returns the original stored file. The
+  optional `disposition=inline|attachment` query controls `Content-Disposition`
+  and defaults to `inline`. Responses use the stored MIME type and original
+  filename, disable shared caching, and prevent MIME sniffing.
+  - Normal users can access files only from active knowledge bases available to
+    chat. Admins and superadmins can also access files from inactive knowledge
+    bases.
+  - Inaccessible documents, missing database records, missing stored files, and
+    unsafe storage paths all return the same `404` response.
 - `DELETE /api/v1/documents/{id}` deletes the document, chunks, and local stored
   file when present. Successful deletes return `204`.
-- `POST /api/v1/documents/{id}/reprocess` re-parses the stored PDF, replaces
-  chunks, recomputes embeddings, and returns the updated document.
+- `POST /api/v1/documents/{id}/reprocess` selects the parser from the stored
+  canonical MIME type, replaces chunks, recomputes embeddings, and returns the
+  updated document.
 
 ## Retrieval
 
@@ -77,7 +91,8 @@ query embedding dimension does not match the configured vector size.
   source chunks.
 - The response includes `question`, `answer`, `citations`, and `source_chunks`.
   Each citation points back to a retrieved chunk with chunk/document IDs,
-  filename, page number, chunk index, and retrieval rank.
+  filename, optional page number, chunk index, and retrieval rank. DOCX chunks
+  have no page number because Word pagination depends on the renderer.
 - When retrieval returns no chunks, or all retrieved chunks are below
   `RETRIEVAL_MIN_SIMILARITY_SCORE`, the API returns a graceful no-evidence
   answer without calling the chat model.

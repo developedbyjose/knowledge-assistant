@@ -73,7 +73,7 @@ class DocumentRepository:
         document.error_message = None
         self.session.flush()
 
-    def mark_processed(self, document: Document, *, page_count: int) -> None:
+    def mark_processed(self, document: Document, *, page_count: int | None) -> None:
         document.status = "processed"
         document.page_count = page_count
         document.error_message = None

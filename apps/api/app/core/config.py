@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     retrieval_min_similarity_score: float = 0.05
     upload_dir: str = "uploads"
     max_upload_bytes: int = 26_214_400
+    max_docx_uncompressed_bytes: int = 104_857_600
 
     cors_origins: str = "http://localhost:3000"
     session_cookie_name: str = "knowledge_assistant_session"

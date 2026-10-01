@@ -51,6 +51,14 @@ export type KnowledgeDocument = UploadedDocument & {
   processed_at: string | null
 }
 
+export type DocumentContent = {
+  blob: Blob
+  filename: string
+  mimeType: string
+}
+
+export type DocumentContentDisposition = "inline" | "attachment"
+
 export type RetrievalResult = {
   chunk_id: string
   document_id: string
@@ -187,7 +195,7 @@ export async function deleteKnowledgeBase(id: string): Promise<void> {
   await apiFetchNoContent(`/knowledge-bases/${id}`, { method: "DELETE" })
 }
 
-export async function uploadPdf(
+export async function uploadDocument(
   knowledgeBaseId: string,
   file: File
 ): Promise<UploadedDocument> {
@@ -206,6 +214,57 @@ export async function listDocuments(knowledgeBaseId: string): Promise<KnowledgeD
 
 export async function getDocument(id: string): Promise<KnowledgeDocument> {
   return apiFetch(`/documents/${id}`)
+}
+
+export async function fetchDocumentContent(
+  id: string,
+  options: {
+    disposition?: DocumentContentDisposition
+    fallbackFilename?: string
+    signal?: AbortSignal
+  } = {}
+): Promise<DocumentContent> {
+  const disposition = options.disposition ?? "inline"
+  const response = await fetch(
+    `${API_BASE_URL}/documents/${id}/content?disposition=${disposition}`,
+    {
+      credentials: "include",
+      signal: options.signal,
+    }
+  )
+
+  if (!response.ok) {
+    const fallback = `Unable to load document (status ${response.status})`
+    throw new ApiError(await responseDetail(response, fallback), response.status)
+  }
+
+  const blob = await response.blob()
+  return {
+    blob,
+    filename:
+      filenameFromContentDisposition(response.headers.get("content-disposition")) ??
+      options.fallbackFilename ??
+      "document",
+    mimeType: response.headers.get("content-type")?.split(";", 1)[0] || blob.type,
+  }
+}
+
+export async function downloadDocumentContent(
+  id: string,
+  fallbackFilename: string
+): Promise<void> {
+  const content = await fetchDocumentContent(id, {
+    disposition: "attachment",
+    fallbackFilename,
+  })
+  const objectUrl = URL.createObjectURL(content.blob)
+  const link = document.createElement("a")
+  link.href = objectUrl
+  link.download = content.filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0)
 }
 
 export async function deleteDocument(id: string): Promise<void> {
@@ -431,6 +490,24 @@ async function responseDetail(response: Response, fallback: string): Promise<str
   } catch {
     return fallback
   }
+}
+
+function filenameFromContentDisposition(header: string | null): string | null {
+  if (!header) {
+    return null
+  }
+
+  const encodedMatch = header.match(/filename\*=UTF-8''([^;]+)/i)
+  if (encodedMatch?.[1]) {
+    try {
+      return decodeURIComponent(encodedMatch[1])
+    } catch {
+      return encodedMatch[1]
+    }
+  }
+
+  const quotedMatch = header.match(/filename="([^"]+)"/i)
+  return quotedMatch?.[1] ?? null
 }
 
 function parseSseFrame(frame: string): ChatStreamEvent | null {

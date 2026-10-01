@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import get_session
 from app.rag.ingestion.chunker import TextChunker
+from app.rag.ingestion.document_parser import DOCX_MIME_TYPE, PDF_MIME_TYPE
+from app.rag.ingestion.docx_parser import DocxParser
 from app.rag.ingestion.pdf_parser import PdfParser
 from app.rag.providers.chat import ChatModel, ChatModelError
 from app.rag.providers.factory import create_chat_model, create_embedding_provider
@@ -75,7 +77,7 @@ def get_document_service(
 ) -> DocumentService:
     return DocumentService(
         session=session,
-        parser=PdfParser(),
+        parsers={PDF_MIME_TYPE: PdfParser(), DOCX_MIME_TYPE: DocxParser()},
         chunker=TextChunker(),
         embedding_provider=embedding_provider,
     )

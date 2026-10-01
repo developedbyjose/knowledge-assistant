@@ -66,7 +66,7 @@ import {
   reprocessDocument,
   retrieveChunks,
   updateKnowledgeBase,
-  uploadPdf,
+  uploadDocument,
 } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { AuthGate } from "@/features/auth/auth-gate"
@@ -149,7 +149,7 @@ function KnowledgeManagementPage() {
 
         const created = await createKnowledgeBase({
           name: "Retrieval Lab",
-          description: "Default workspace for validating PDF chunk retrieval.",
+          description: "Default workspace for validating document chunk retrieval.",
         })
         if (!active) {
           return
@@ -218,7 +218,7 @@ function KnowledgeManagementPage() {
       setError(null)
       const created = await createKnowledgeBase({
         name: knowledgeBaseName.trim(),
-        description: "PDF retrieval validation workspace.",
+        description: "Document retrieval validation workspace.",
       })
       setKnowledgeBases((current) => [created, ...current])
       setSelectedKnowledgeBaseId(created.id)
@@ -236,10 +236,10 @@ function KnowledgeManagementPage() {
   async function handleUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!selectedKnowledgeBaseId || !file) {
-      setError("Choose a knowledge base and a PDF file.")
+      setError("Choose a knowledge base and a PDF or DOCX file.")
       return
     }
-    const validationError = validatePdf(file)
+    const validationError = validateDocument(file)
     if (validationError) {
       setError(validationError)
       return
@@ -250,7 +250,7 @@ function KnowledgeManagementPage() {
       setError(null)
       setResults([])
       setHasRetrieved(false)
-      await uploadPdf(selectedKnowledgeBaseId, file)
+      await uploadDocument(selectedKnowledgeBaseId, file)
       setFile(null)
       await Promise.all([refreshKnowledgeBases(), loadDocuments(selectedKnowledgeBaseId)])
     } catch (caught) {
@@ -383,7 +383,7 @@ function KnowledgeManagementPage() {
       <PageContainer size="wide">
         <PageHeader
           title="Retrieval Lab"
-          description="Upload one PDF, index its chunks, and verify the top five retrieval matches before connecting an LLM."
+          description="Upload a PDF or DOCX file, index its chunks, and verify the top five retrieval matches before connecting an LLM."
           actions={
             <div className="flex items-center gap-2">
               <Badge variant="outline" className="hidden sm:inline-flex">
@@ -513,7 +513,7 @@ function KnowledgeManagementPage() {
 
             <Card className="rounded-lg shadow-none">
               <CardHeader className="border-b pb-4">
-                <CardTitle>PDF upload</CardTitle>
+                <CardTitle>Document upload</CardTitle>
                 <CardDescription>Processing runs synchronously for this first slice.</CardDescription>
                 <CardAction>
                   <UploadIcon className="size-4 text-muted-foreground" aria-hidden="true" />
@@ -521,17 +521,17 @@ function KnowledgeManagementPage() {
               </CardHeader>
               <CardContent className="space-y-4 pt-4">
                 <form className="space-y-3" onSubmit={handleUpload}>
-                  <label htmlFor="pdf-file" className="text-sm font-medium">
-                    PDF file
+                  <label htmlFor="document-file" className="text-sm font-medium">
+                    PDF or DOCX file
                   </label>
                   <Input
-                    id="pdf-file"
+                    id="document-file"
                     type="file"
-                    accept="application/pdf,.pdf"
+                    accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx"
                     onChange={(event) => {
                       const selected = event.target.files?.[0] ?? null
                       setFile(selected)
-                      setError(selected ? validatePdf(selected) : null)
+                      setError(selected ? validateDocument(selected) : null)
                     }}
                   />
                   {file ? (
@@ -556,7 +556,7 @@ function KnowledgeManagementPage() {
             <Card className="rounded-lg shadow-none">
               <CardHeader className="border-b pb-4">
                 <CardTitle>Documents</CardTitle>
-                <CardDescription>PDFs stored locally and indexed for the selected collection.</CardDescription>
+                <CardDescription>PDF and DOCX files stored locally and indexed for the selected collection.</CardDescription>
                 <CardAction>
                   <Button
                     type="button"
@@ -580,7 +580,7 @@ function KnowledgeManagementPage() {
                     <FileTextIcon className="mx-auto size-5 text-muted-foreground" aria-hidden="true" />
                     <p className="mt-2 text-sm font-medium">No documents in this knowledge base</p>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      Upload a text-based PDF to create chunks for retrieval.
+                      Upload a text-based PDF or DOCX file to create chunks for retrieval.
                     </p>
                   </div>
                 ) : (
@@ -678,7 +678,7 @@ function KnowledgeManagementPage() {
                     id="question"
                     value={question}
                     onChange={(event) => setQuestion(event.target.value)}
-                    placeholder="Ask a question that should be answered by the uploaded PDF"
+                    placeholder="Ask a question that should be answered by the uploaded documents"
                     rows={4}
                   />
                   <Button type="submit" disabled={isBusy || !question.trim()}>
@@ -710,8 +710,8 @@ function KnowledgeManagementPage() {
                     </p>
                     <p className="mt-1 text-sm text-muted-foreground">
                       {hasRetrieved
-                        ? "This knowledge base has no indexed chunks yet. Upload a text-based PDF here, or choose a collection with chunks."
-                        : "Upload a text-based PDF into this knowledge base, then submit a retrieval query."}
+                        ? "This knowledge base has no indexed chunks yet. Upload a text-based PDF or DOCX file here, or choose a collection with chunks."
+                        : "Upload a text-based PDF or DOCX file into this knowledge base, then submit a retrieval query."}
                     </p>
                   </div>
                 ) : (
@@ -795,17 +795,18 @@ function errorMessage(caught: unknown) {
   return caught instanceof Error ? caught.message : "Something went wrong."
 }
 
-function validatePdf(file: File) {
-  if (!file.name.toLowerCase().endsWith(".pdf")) {
-    return "Choose a PDF file."
+function validateDocument(file: File) {
+  const lowerName = file.name.toLowerCase()
+  if (!lowerName.endsWith(".pdf") && !lowerName.endsWith(".docx")) {
+    return "Choose a PDF or DOCX file."
   }
 
   if (file.size === 0) {
-    return "Uploaded PDF cannot be empty."
+    return "Uploaded document cannot be empty."
   }
 
   if (file.size > MAX_UPLOAD_BYTES) {
-    return "Uploaded PDF must be 25 MB or smaller."
+    return "Uploaded document must be 25 MB or smaller."
   }
 
   return null

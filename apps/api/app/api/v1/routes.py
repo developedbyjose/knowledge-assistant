@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any, Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Cookie, Depends, File, Header, HTTPException, Response, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from app.api.v1.dependencies import (
     get_answer_service, get_auth_service, get_conversation_service, get_current_user,
@@ -188,7 +188,7 @@ async def upload_document(
     service: Annotated[DocumentService, Depends(get_document_service)], file: UploadFile = File(...),
 ) -> DocumentUploadRead:
     try:
-        return await service.upload_pdf(knowledge_base_id=knowledge_base_id, upload=file)
+        return await service.upload_document(knowledge_base_id=knowledge_base_id, upload=file)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -209,6 +209,33 @@ def get_document(document_id: UUID, _: AdminUser, service: Annotated[DocumentSer
         return service.get(document_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/documents/{document_id}/content", response_class=FileResponse)
+def get_document_content(
+    document_id: UUID,
+    user: CurrentUser,
+    service: Annotated[DocumentService, Depends(get_document_service)],
+    disposition: Literal["inline", "attachment"] = "inline",
+) -> FileResponse:
+    try:
+        content = service.get_content(
+            document_id,
+            allow_inactive_knowledge_base=user.role in {"admin", "superadmin"},
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Document not found.") from exc
+
+    return FileResponse(
+        path=content.path,
+        media_type=content.mime_type,
+        filename=content.filename,
+        content_disposition_type=disposition,
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.delete("/documents/{document_id}", status_code=204)
