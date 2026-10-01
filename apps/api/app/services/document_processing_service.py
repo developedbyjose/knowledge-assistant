@@ -5,14 +5,18 @@ from pathlib import Path
 
 from app.models.document import Document
 from app.rag.ingestion.chunker import TextChunker
-from app.rag.ingestion.pdf_parser import PdfParser
+from app.rag.ingestion.document_parser import (
+    PDF_MIME_TYPE,
+    DocumentParser,
+    canonical_mime_type,
+)
 from app.rag.providers.embedding import EmbeddingProvider
 from app.repositories.document_repository import DocumentRepository
 
 
 @dataclass(frozen=True)
 class DocumentProcessingResult:
-    page_count: int
+    page_count: int | None
     chunk_count: int
 
 
@@ -21,16 +25,16 @@ class DocumentProcessingService:
         self,
         *,
         documents: DocumentRepository,
-        parser: PdfParser,
+        parsers: dict[str, DocumentParser],
         chunker: TextChunker,
         embedding_provider: EmbeddingProvider,
     ) -> None:
         self.documents = documents
-        self.parser = parser
+        self.parsers = parsers
         self.chunker = chunker
         self.embedding_provider = embedding_provider
 
-    def process_pdf(
+    def process_document(
         self,
         *,
         document: Document,
@@ -44,12 +48,18 @@ class DocumentProcessingService:
         if not target_path.exists():
             raise FileNotFoundError("Stored document file not found.")
 
-        pages = self.parser.parse(target_path)
-        chunks = self.chunker.chunk_pages(pages)
+        mime_type = canonical_mime_type(document.mime_type)
+        parser = self.parsers.get(mime_type or "")
+        if parser is None:
+            raise ValueError("Stored document type is not supported.")
+
+        blocks = parser.parse(target_path)
+        chunks = self.chunker.chunk_blocks(blocks)
         if not chunks:
-            raise ValueError("No extractable text was found in the PDF.")
+            raise ValueError("No extractable text was found in the document.")
 
         embeddings = self.embedding_provider.embed_texts([chunk.content for chunk in chunks])
         self.documents.add_chunks(document=document, chunks=chunks, embeddings=embeddings)
-        self.documents.mark_processed(document, page_count=len(pages))
-        return DocumentProcessingResult(page_count=len(pages), chunk_count=len(chunks))
+        page_count = len(blocks) if mime_type == PDF_MIME_TYPE else None
+        self.documents.mark_processed(document, page_count=page_count)
+        return DocumentProcessingResult(page_count=page_count, chunk_count=len(chunks))

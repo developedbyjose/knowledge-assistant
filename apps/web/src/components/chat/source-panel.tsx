@@ -9,9 +9,10 @@ import { AnswerCitation, RetrievalResult } from "@/lib/api"
 type SourcePanelProps = {
   citations: AnswerCitation[]
   sourceChunks: RetrievalResult[]
+  onPreviewSource: (source: RetrievalResult, trigger: HTMLButtonElement) => void
 }
 
-export function SourcePanel({ citations, sourceChunks }: SourcePanelProps) {
+export function SourcePanel({ citations, sourceChunks, onPreviewSource }: SourcePanelProps) {
   return (
     <aside className="flex min-h-0 flex-col border-l bg-background">
       <div className="border-b p-4">
@@ -30,14 +31,20 @@ export function SourcePanel({ citations, sourceChunks }: SourcePanelProps) {
             sourceChunks.map((source) => {
               const cited = citations.some((citation) => citation.chunk_id === source.chunk_id)
               return (
-                <div key={source.chunk_id} className="rounded-lg border p-3">
+                <button
+                  key={source.chunk_id}
+                  type="button"
+                  onClick={(event) => onPreviewSource(source, event.currentTarget)}
+                  className="w-full rounded-lg border p-3 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                  aria-label={`Preview ${source.filename}${source.page_number ? `, page ${source.page_number}` : ""}`}
+                >
                   <div className="flex items-start gap-2">
                     <FileTextIcon className="mt-0.5 size-4 text-muted-foreground" />
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">{source.filename}</p>
                       <p className="text-xs text-muted-foreground">
-                        Page {source.page_number ?? "unknown"} · Rank {source.rank} · Score{" "}
-                        {source.similarity_score.toFixed(2)}
+                        {source.page_number !== null ? `Page ${source.page_number} · ` : ""}
+                        Rank {source.rank} · Score {source.similarity_score.toFixed(2)}
                       </p>
                     </div>
                     {cited ? <Badge variant="secondary">Cited</Badge> : null}
@@ -45,7 +52,7 @@ export function SourcePanel({ citations, sourceChunks }: SourcePanelProps) {
                   <p className="mt-3 max-h-32 overflow-hidden text-sm leading-6 text-muted-foreground">
                     {source.content}
                   </p>
-                </div>
+                </button>
               )
             })
           )}

@@ -25,9 +25,12 @@ The current persistence model includes:
 
 Document ingestion is synchronous for the first slice. Upload and reprocess
 commands create or reuse a document record, transition it through
-`pending -> processing -> processed` or `failed`, extract and clean PDF page
-text, chunk pages with source metadata, generate local embeddings, and store the
-chunk vectors in pgvector.
+`pending -> processing -> processed` or `failed`, select a parser from the
+stored PDF or DOCX MIME type, clean extracted text, chunk parsed blocks with
+source metadata, generate local embeddings, and store the chunk vectors in
+pgvector. PDF chunks preserve page numbers. DOCX body paragraphs and table text
+preserve block type and order but use null page counts and page numbers because
+pagination is renderer-dependent.
 
 The backend now layers cited answer generation and chat on top of retrieval.
 Answer and conversation routes call application services, services retrieve
@@ -41,7 +44,11 @@ The frontend keeps the focused Retrieval Lab UI and adds `/chat` as the primary
 assistant workflow. The chat page uses Server-Sent Events for one-way assistant
 streaming, shows loading/error/insufficient-context states, keeps source
 evidence visible beside the transcript, restores sources when conversations are
-reopened, and records assistant response feedback.
+reopened, and records assistant response feedback. Source cards open the
+original file in a large authenticated preview dialog: PDFs use the browser's
+PDF viewer at the cited page, while DOCX files are rendered locally in the
+browser with embedded alternate HTML disabled. DOCX layout may differ slightly
+from Microsoft Word, and downloads always return the untouched original file.
 
 ## Authentication and authorization
 
@@ -52,10 +59,14 @@ plus expiry timestamps; browsers receive the raw token in an HTTP-only,
 SameSite=Lax cookie.
 
 FastAPI dependencies authenticate protected requests and enforce roles before
-application services run. Knowledge and PDF mutation requires admin access;
+application services run. Knowledge and document mutation requires admin access;
 account management requires superadmin access. Conversation repositories always
 filter by the current user's ID, including for admins, and new messages require
-an active knowledge base.
+an active knowledge base. Original document content is available to normal users
+only through active knowledge bases they can chat with; admins and superadmins
+can also retrieve files from inactive knowledge bases. The document service
+resolves every stored path beneath `UPLOAD_DIR` before the route returns bytes,
+and inaccessible or missing files use one non-disclosing not-found response.
 
 The frontend mirrors these boundaries for navigation: `/login` establishes a
 session, `/change-password` handles temporary credentials, `/chat` is shared by
@@ -69,7 +80,9 @@ python -m app.cli.create_superadmin
 ```
 
 Production must use `SESSION_COOKIE_SECURE=true`, HTTPS, and exact frontend
-origins in `CORS_ORIGINS`. PDF remains the only supported ingestion format.
+origins in `CORS_ORIGINS`. Text-based PDF and DOCX are the supported ingestion
+formats. Legacy DOC, embedded-image OCR, headers, footers, comments, and
+tracked-change details are not ingested.
 
 ## Developer Operations
 

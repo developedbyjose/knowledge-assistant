@@ -15,6 +15,7 @@ import {
 
 import { ChatComposer } from "@/components/chat/chat-composer"
 import { SourcePanel } from "@/components/chat/source-panel"
+import { DocumentPreviewDialog } from "@/components/documents/document-preview-dialog"
 import { PageContainer } from "@/components/layout/page-container"
 import { PageHeader } from "@/components/layout/page-header"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -77,6 +78,8 @@ function ChatPageContent() {
   const [busyState, setBusyState] = useState<BusyState>("loading")
   const [error, setError] = useState<string | null>(null)
   const [conversationToDeleteId, setConversationToDeleteId] = useState<string | null>(null)
+  const [previewSource, setPreviewSource] = useState<RetrievalResult | null>(null)
+  const [previewTrigger, setPreviewTrigger] = useState<HTMLButtonElement | null>(null)
 
   const selectedConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === selectedConversationId),
@@ -557,8 +560,23 @@ function ChatPageContent() {
         <SourcePanel
           citations={selectedSources.citations}
           sourceChunks={selectedSources.sourceChunks}
+          onPreviewSource={(source, trigger) => {
+            setPreviewSource(source)
+            setPreviewTrigger(trigger)
+          }}
         />
       </div>
+
+      <DocumentPreviewDialog
+        open={previewSource !== null}
+        source={previewSource}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPreviewSource(null)
+            window.requestAnimationFrame(() => previewTrigger?.focus())
+          }
+        }}
+      />
 
       <Dialog
         open={conversationToDeleteId !== null}

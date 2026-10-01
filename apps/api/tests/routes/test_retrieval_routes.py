@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 import pytest
 
@@ -14,11 +15,13 @@ from app.api.v1.dependencies import (
     get_retrieval_service,
 )
 from app.main import app
+from app.rag.ingestion.document_parser import DOCX_MIME_TYPE
 from app.rag.providers.chat import ChatModelError
 from app.schemas.conversation import ConversationMessageResponse, ConversationRead, MessageFeedbackRead, MessageRead
 from app.schemas.document import DocumentRead
 from app.schemas.knowledge_base import KnowledgeBaseRead
 from app.schemas.retrieval import AnswerCitation, CitedAnswer, DocumentUploadRead, RetrievalResult, RetrievalResults
+from app.services.document_service import DocumentContent
 
 MISSING_ID = UUID("00000000-0000-0000-0000-000000000404")
 PROCESSED_ID = UUID("00000000-0000-0000-0000-000000000101")
@@ -85,28 +88,41 @@ class FakeKnowledgeBaseService:
 
 
 class FakeDocumentService:
-    async def upload_pdf(self, *, knowledge_base_id, upload):  # noqa: ANN001, ANN201
+    def __init__(
+        self,
+        *,
+        content_path=None,  # noqa: ANN001
+        content_filename="Policy handbook.pdf",  # noqa: ANN001
+        content_mime_type="application/pdf",  # noqa: ANN001
+        error=None,  # noqa: ANN001
+    ):
+        self.content_path = content_path
+        self.content_filename = content_filename
+        self.content_mime_type = content_mime_type
+        self.error = error
+        self.allow_inactive_knowledge_base = None
+
+    async def upload_document(self, *, knowledge_base_id, upload):  # noqa: ANN001, ANN201
         if knowledge_base_id == MISSING_ID:
             raise LookupError("Knowledge base not found.")
 
         content = await upload.read()
-        if upload.content_type != "application/pdf":
-            raise ValueError("Only PDF uploads are supported.")
-        if not (upload.filename or "").lower().endswith(".pdf"):
-            raise ValueError("Only PDF uploads are supported.")
+        filename = (upload.filename or "").lower()
+        if not filename.endswith((".pdf", ".docx")):
+            raise ValueError("Only PDF or DOCX uploads are supported.")
         if not content:
-            raise ValueError("Uploaded PDF cannot be empty.")
+            raise ValueError("Uploaded document cannot be empty.")
         if len(content) > 26_214_400:
-            raise ValueError("Uploaded PDF must be 25 MB or smaller.")
-        if not content.startswith(b"%PDF-"):
+            raise ValueError("Uploaded document must be 25 MB or smaller.")
+        if filename.endswith(".pdf") and not content.startswith(b"%PDF-"):
             raise ValueError("Uploaded file does not appear to be a valid PDF.")
 
         return DocumentUploadRead(
             id=uuid4(),
-            filename="sample.pdf",
+            filename=upload.filename,
             original_filename=upload.filename,
             status="processed",
-            page_count=1,
+            page_count=1 if filename.endswith(".pdf") else None,
             chunk_count=2,
             error_message=None,
         )
@@ -120,6 +136,16 @@ class FakeDocumentService:
         if document_id == MISSING_ID:
             raise LookupError("Document not found.")
         return self._read(id=document_id)
+
+    def get_content(self, document_id, *, allow_inactive_knowledge_base):  # noqa: ANN001, ANN201
+        self.allow_inactive_knowledge_base = allow_inactive_knowledge_base
+        if self.error or document_id == MISSING_ID or self.content_path is None:
+            raise LookupError("Document not found.")
+        return DocumentContent(
+            path=self.content_path,
+            filename=self.content_filename,
+            mime_type=self.content_mime_type,
+        )
 
     def delete(self, document_id):  # noqa: ANN001, ANN201
         if document_id == MISSING_ID:
@@ -427,7 +453,7 @@ def test_rejects_empty_pdf_upload() -> None:
 
     reset_overrides()
     assert response.status_code == 400
-    assert response.json()["detail"] == "Uploaded PDF cannot be empty."
+    assert response.json()["detail"] == "Uploaded document cannot be empty."
 
 
 def test_rejects_oversized_pdf_upload() -> None:
@@ -441,7 +467,7 @@ def test_rejects_oversized_pdf_upload() -> None:
 
     reset_overrides()
     assert response.status_code == 400
-    assert response.json()["detail"] == "Uploaded PDF must be 25 MB or smaller."
+    assert response.json()["detail"] == "Uploaded document must be 25 MB or smaller."
 
 
 def test_rejects_invalid_pdf_signature() -> None:
@@ -470,6 +496,40 @@ def test_upload_pdf_returns_document_status() -> None:
     reset_overrides()
     assert response.status_code == 200
     assert response.json()["status"] == "processed"
+
+
+@pytest.mark.parametrize("role", ["admin", "superadmin"])
+def test_admin_roles_can_upload_docx_without_page_count(role: str) -> None:
+    actor = SimpleNamespace(**{**AUTH_USER.__dict__, "role": role})
+    app.dependency_overrides[get_current_user] = lambda: actor
+    app.dependency_overrides[get_document_service] = lambda: FakeDocumentService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/documents",
+        files={"file": ("handbook.docx", b"docx fixture", DOCX_MIME_TYPE)},
+    )
+
+    reset_overrides()
+    assert response.status_code == 200
+    assert response.json()["status"] == "processed"
+    assert response.json()["page_count"] is None
+
+
+def test_normal_user_cannot_upload_docx() -> None:
+    actor = SimpleNamespace(**{**AUTH_USER.__dict__, "role": "user"})
+    app.dependency_overrides[get_current_user] = lambda: actor
+    app.dependency_overrides[get_document_service] = lambda: FakeDocumentService()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{uuid4()}/documents",
+        files={"file": ("handbook.docx", b"docx fixture", DOCX_MIME_TYPE)},
+    )
+
+    reset_overrides()
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Admin access required."
 
 
 def test_upload_missing_knowledge_base_returns_404() -> None:
@@ -711,6 +771,115 @@ def test_get_document_route() -> None:
     reset_overrides()
     assert response.status_code == 200
     assert response.json()["id"] == str(document_id)
+
+
+@pytest.mark.parametrize(
+    ("role", "expected_allow_inactive"),
+    [("user", False), ("admin", True), ("superadmin", True)],
+)
+def test_get_document_content_returns_file_for_authorized_roles(
+    tmp_path,
+    role: str,
+    expected_allow_inactive: bool,
+) -> None:  # noqa: ANN001
+    stored_file = tmp_path / "policy.pdf"
+    stored_file.write_bytes(b"%PDF-1.4 source file")
+    service = FakeDocumentService(content_path=stored_file)
+    actor = SimpleNamespace(**{**AUTH_USER.__dict__, "role": role})
+    app.dependency_overrides[get_current_user] = lambda: actor
+    app.dependency_overrides[get_document_service] = lambda: service
+    client = TestClient(app)
+
+    response = client.get(f"/api/v1/documents/{uuid4()}/content")
+
+    reset_overrides()
+    assert response.status_code == 200
+    assert response.content == b"%PDF-1.4 source file"
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["content-disposition"].startswith("inline;")
+    assert "Policy%20handbook.pdf" in response.headers["content-disposition"]
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert service.allow_inactive_knowledge_base is expected_allow_inactive
+
+
+def test_get_document_content_supports_attachment_disposition(tmp_path) -> None:  # noqa: ANN001
+    stored_file = tmp_path / "handbook.docx"
+    stored_file.write_bytes(b"docx source file")
+    app.dependency_overrides[get_document_service] = lambda: FakeDocumentService(
+        content_path=stored_file,
+        content_filename="Policy handbook.docx",
+        content_mime_type=DOCX_MIME_TYPE,
+    )
+    client = TestClient(app)
+
+    response = client.get(
+        f"/api/v1/documents/{uuid4()}/content",
+        params={"disposition": "attachment"},
+    )
+
+    reset_overrides()
+    assert response.status_code == 200
+    assert response.content == b"docx source file"
+    assert response.headers["content-type"] == DOCX_MIME_TYPE
+    assert response.headers["content-disposition"].startswith("attachment;")
+
+
+def test_get_document_content_rejects_invalid_disposition(tmp_path) -> None:  # noqa: ANN001
+    stored_file = tmp_path / "policy.pdf"
+    stored_file.write_bytes(b"%PDF-1.4 source file")
+    app.dependency_overrides[get_document_service] = lambda: FakeDocumentService(
+        content_path=stored_file
+    )
+    client = TestClient(app)
+
+    response = client.get(
+        f"/api/v1/documents/{uuid4()}/content",
+        params={"disposition": "open"},
+    )
+
+    reset_overrides()
+    assert response.status_code == 422
+
+
+def test_get_document_content_returns_404_without_leaking_access_reason() -> None:
+    app.dependency_overrides[get_document_service] = lambda: FakeDocumentService(
+        error=LookupError("Inactive knowledge base.")
+    )
+    client = TestClient(app)
+
+    response = client.get(f"/api/v1/documents/{uuid4()}/content")
+
+    reset_overrides()
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Document not found."
+
+
+def test_get_document_content_requires_authentication() -> None:
+    def unauthenticated():  # noqa: ANN202
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
+    app.dependency_overrides[get_current_user] = unauthenticated
+    app.dependency_overrides[get_document_service] = lambda: FakeDocumentService()
+    client = TestClient(app)
+
+    response = client.get(f"/api/v1/documents/{uuid4()}/content")
+
+    reset_overrides()
+    assert response.status_code == 401
+
+
+def test_get_document_content_rejects_temporary_password_account() -> None:
+    actor = SimpleNamespace(**{**AUTH_USER.__dict__, "must_change_password": True})
+    app.dependency_overrides[get_current_user] = lambda: actor
+    app.dependency_overrides[get_document_service] = lambda: FakeDocumentService()
+    client = TestClient(app)
+
+    response = client.get(f"/api/v1/documents/{uuid4()}/content")
+
+    reset_overrides()
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Password change required."
 
 
 def test_delete_document_route() -> None:

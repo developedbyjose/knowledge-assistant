@@ -53,6 +53,23 @@ class FakeEmbeddingProvider:
         return [0.1] * self.dimensions
 
 
+class FakeDocxDocuments(FakeDocuments):
+    def search_chunks(self, *, knowledge_base_id, embedding, limit):  # noqa: ANN001
+        return [
+            RetrievedChunk(
+                chunk_id=uuid4(),
+                document_id=uuid4(),
+                filename="handbook.docx",
+                rank=1,
+                similarity_score=0.9,
+                content="Support is owned by Ari.",
+                page_number=None,
+                chunk_index=0,
+                metadata={"source": "docx", "block_type": "table", "block_index": 1},
+            )
+        ]
+
+
 def test_retrieval_returns_top_five_in_order() -> None:
     provider = FakeEmbeddingProvider()
     documents = FakeDocuments()
@@ -68,6 +85,22 @@ def test_retrieval_returns_top_five_in_order() -> None:
     assert documents.limit == 5
     assert documents.embedding == [0.1] * settings.embedding_dimensions
     assert results.results[0].metadata == {"page_number": 1}
+
+
+def test_retrieval_preserves_docx_metadata_without_page_number() -> None:
+    service = RetrievalService(session=None, embedding_provider=FakeEmbeddingProvider())  # type: ignore[arg-type]
+    service.knowledge_bases = FakeKnowledgeBases()
+    service.documents = FakeDocxDocuments()
+
+    result = service.retrieve(knowledge_base_id=uuid4(), question="Who owns support?", limit=1)
+
+    assert result.results[0].filename == "handbook.docx"
+    assert result.results[0].page_number is None
+    assert result.results[0].metadata == {
+        "source": "docx",
+        "block_type": "table",
+        "block_index": 1,
+    }
 
 
 def test_retrieval_missing_knowledge_base_raises_lookup_error() -> None:
